@@ -1,0 +1,4 @@
+# tts/mms_tam — Meta MMS-TTS Tamil via transformers (model licence CC-BY-NC-4.0). CPU-only torch wheel.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
+transformers>=4.40

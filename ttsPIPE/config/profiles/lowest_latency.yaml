@@ -1,0 +1,8 @@
+description: "Piper only, one Tamil voice for everything (no voice switch), 3-word first chunk, 40 ms jitter buffer, one-chunk look-ahead."
+config:
+  stages:
+    tts: {impl: piper, params: {voices: [ta_IN-rasa_female-medium], threads: 4}}
+  voice: {impl: piper, voice_id: ta_IN-rasa_female-medium}
+  chunker: {first_chunk_min_words: 3, first_chunk_max_words: 6, first_chunk_max_wait_ms: 250, nonstreaming_max_chunk_chars: 120}
+  playback: {jitter_ms: 40, lookahead_chunks: 1}
+  graph: {shadows: {tts: null}}

@@ -1,0 +1,8 @@
+description: "Default. Fish Audio S2-Pro (4B, NF4) on the GPU: Tamil, English and Tanglish in one voice, zero-shot cloned voices (Voice cloning page). Needs the Fish server (../), which starts on demand; ~1-2 min to load. RTF ~1 on an RTX 2050, so a 400 ms jitter buffer."
+config:
+  stages:
+    tts: {impl: fish_s2, params: {}}
+  voice: {impl: fish_s2, voice_id: server_active}
+  chunker: {first_chunk_min_words: 5, first_chunk_max_words: 10, first_chunk_max_wait_ms: 400, max_chunk_chars: 300}
+  playback: {jitter_ms: 400, lookahead_chunks: 2}
+  graph: {shadows: {tts: null}}

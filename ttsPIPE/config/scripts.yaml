@@ -1,0 +1,29 @@
+# Sample texts served by GET /api/scripts.
+- id: ta
+  title: Tamil — weather
+  language: ta
+  text: "வணக்கம்! இன்று வானிலை மிகவும் நன்றாக இருக்கிறது. நாளை மாலை லேசான மழை பெய்யக்கூடும், எனவே குடை எடுத்துச் செல்லுங்கள்."
+- id: tanglish_script
+  title: Tanglish — Tamil script
+  language: tanglish
+  text: "நாளைக்கு meeting இருக்கு, please time-க்கு வந்துடுங்க. Report-ஐ இன்னைக்கே send பண்ணிடுங்க."
+- id: tanglish_roman
+  title: Tanglish — romanized
+  language: tanglish
+  text: "Naalaikku meeting irukku, please time ku vandhudunga. Report-a innaikke send pannidunga, romba urgent."
+- id: en
+  title: English — order update
+  language: en
+  text: "Hello! Your order has shipped and should arrive by Thursday afternoon. You can track it any time from the app."
+- id: numbers
+  title: Numbers, dates & money stress test
+  language: mixed
+  text: "Your bill of ₹1,24,500.75 is due on 15/11/2026 at 10:30 AM. உங்கள் கட்டணம் ₹2,350 நாளை 5:45 PM வரை செலுத்தலாம். Call +91 98765 43210, it's 25% off, 3.5 km away, the 21st order since 2019."
+- id: long
+  title: Long paragraph (English)
+  language: en
+  text: "Thanks for calling. I've checked your account and I can see the payment you made yesterday evening. It usually takes one to two working days for the bank to confirm a transfer, so the status should update by tomorrow. In the meantime, your service will continue without interruption, and you don't need to do anything else. If the payment still shows as pending after forty eight hours, just reply to this message and I'll raise a ticket with the billing team right away. Is there anything else I can help you with today?"
+- id: llm_markdown
+  title: LLM markdown reply
+  language: en
+  text: "**Sure!** Here are your options:\n\n1. *Express* delivery — ₹99, arrives tomorrow 🚚\n2. Standard delivery — free, arrives in 3-5 days\n\nSee https://example.com/delivery for details."

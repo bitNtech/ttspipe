@@ -1,0 +1,11 @@
+description: "Piper Rasa for Tamil, Kokoro-82M (af_heart) for English runs. Kokoro is RTF ~0.65 and ~1 s first audio on CPU, so chunks are longer and the jitter buffer larger."
+config:
+  stages:
+    tts:
+      impl: lang_router
+      params: {ta_impl: piper, ta_voice: ta_IN-rasa_female-medium, en_impl: kokoro, en_voice: af_heart,
+               ta_latn_to: ta, min_run_words: 3}
+  voice: {impl: lang_router, voice_id: ""}
+  chunker: {first_chunk_min_words: 6, max_chunk_chars: 300}
+  playback: {jitter_ms: 120, lookahead_chunks: 2}
+  graph: {shadows: {tts: null}}

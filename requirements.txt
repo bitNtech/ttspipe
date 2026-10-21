@@ -1,0 +1,71 @@
+# Verified minimal runtime set for the WebSocket TTS server.
+#
+# torch/torchaudio come from the CUDA 12.8 wheel index (GTX 1650, sm_75,
+# driver 595.91.07 / CUDA 13.2 -- cu128 wheels run fine against a newer
+# driver). run.sh passes --extra-index-url so this file stays pip-installable
+# on its own too:
+#
+#   pip install --extra-index-url https://download.pytorch.org/whl/cu128 -r requirements.txt
+#
+# The vendored fork (vendor/fish-speech, see run.sh phase 4) is NOT installed
+# from its own pyproject.toml -- that pulls in a training stack (gradio,
+# wandb, lightning, datasets, pyaudio, modelscope, silero-vad...) this server
+# never touches. This file is the trimmed runtime-only set, verified by
+# actually importing fish_speech.models.text2semantic.inference and
+# fish_speech.models.dac.inference with vendor/fish-speech on sys.path.
+#
+# Packages below were NOT in the original candidate list and were only found
+# by that import-flush exercise:
+#   - click, pyrootutils, tqdm: imported directly by
+#     fish_speech/models/dac/inference.py or
+#     fish_speech/models/text2semantic/inference.py.
+#   - natsort: imported by fish_speech/utils/file.py.
+#   - `from fish_speech.utils.file import AUDIO_EXTENSIONS` (used by
+#     dac/inference.py) first runs fish_speech/utils/__init__.py, which pulls
+#     in instantiators.py, logging_utils.py and rich_utils.py -- these import
+#     `pytorch_lightning` / `lightning.pytorch.utilities` and `rich`. So a
+#     *thin slice* of the training stack the fork's own pyproject.toml pulls
+#     in turns out to be unavoidable at import time even though the server
+#     never trains anything. `lightning` alone (no wandb/datasets/gradio) is
+#     the fix.
+
+torch==2.8.0
+torchaudio==2.8.0
+
+bitsandbytes>=0.45
+transformers<=4.57.3
+
+numpy
+einops
+einx[torch]==0.2.2
+librosa
+soundfile
+resampy
+loguru
+tiktoken>=0.8.0
+pydantic>=2.9
+ormsgpack
+cachetools
+inflect>=7.4.0
+opencc-python-reimplemented==0.1.7
+hydra-core>=1.3.2
+omegaconf
+descript-audio-codec
+descript-audiotools
+safetensors
+
+# fish_speech direct/transitive imports not in the original candidate list (see note above)
+click
+pyrootutils
+tqdm
+natsort
+lightning>=2.1.0
+rich>=13.5.3
+
+fastapi>=0.115
+# Starlette parses multipart/form-data through this; POST /v1/tts/clone
+# accepts a reference clip as a file part, which needs it at request time.
+python-multipart>=0.0.9
+uvicorn[standard]>=0.30
+websockets
+huggingface_hub[hf_transfer]

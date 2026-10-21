@@ -1,0 +1,919 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TTS Console</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #f0f2f5;
+    --ink: #14171c;
+    --ink-dim: #5c6570;
+    --line: #dde1e7;
+    --accent: #2f6df6;
+    --accent-ink: #ffffff;
+    --ok: #1a8f4a;
+    --warn: #b06b00;
+    --bad: #c62a2a;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --panel: #171a20;
+      --panel-2: #1e222a;
+      --ink: #e6e9ee;
+      --ink-dim: #99a2ae;
+      --line: #2a2f38;
+      --accent: #5b8dff;
+      --accent-ink: #0b0d11;
+      --ok: #3fbf72;
+      --warn: #e0a33a;
+      --bad: #ff6b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px 16px 64px;
+    background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--ink-dim); font-size: 13px; }
+  .pill {
+    font: 12px/1 var(--mono); padding: 5px 9px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel); white-space: nowrap;
+  }
+  .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+  .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+  .pill.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, var(--line)); }
+  .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 14px 0 20px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 18px; margin-bottom: 16px;
+  }
+  .card > h2 {
+    font-size: 14px; margin: 0 0 4px; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--ink-dim);
+  }
+  .card > .hint { color: var(--ink-dim); font-size: 13px; margin: 0 0 14px; }
+  .card > .hint code { font-family: var(--mono); font-size: 12px; }
+
+  label { display: block; font-size: 13px; color: var(--ink-dim); margin: 12px 0 5px; }
+  input[type=text], input[type=number], textarea, select, input[type=file] {
+    width: 100%; padding: 9px 10px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--ink);
+    font: inherit;
+  }
+  textarea { resize: vertical; min-height: 68px; }
+  input[type=file] { padding: 7px; font-size: 13px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 200px; min-width: 0; }
+  .checks { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  .checks label { display: flex; align-items: center; gap: 7px; margin: 0; cursor: pointer; }
+  .checks input { width: auto; }
+
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+  button {
+    padding: 9px 15px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--ink); font: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .voice { display: none; margin-top: 16px; padding: 14px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); }
+  .voice.on { display: block; }
+  .voice .quote { font-style: italic; margin: 8px 0; padding-left: 10px; border-left: 2px solid var(--line); }
+  .kv { display: flex; gap: 18px; flex-wrap: wrap; font: 12px/1.6 var(--mono); color: var(--ink-dim); }
+  .kv b { color: var(--ink); font-weight: 600; }
+
+  .metrics { display: flex; gap: 20px; flex-wrap: wrap; margin-top: 14px; font: 12px/1.5 var(--mono); color: var(--ink-dim); }
+  .metrics b { display: block; font-size: 17px; color: var(--ink); font-weight: 600; }
+
+  #log {
+    margin-top: 8px; height: 190px; overflow-y: auto; padding: 10px 12px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+    font: 12px/1.6 var(--mono); white-space: pre-wrap; word-break: break-word;
+  }
+  #log .t { color: var(--ink-dim); }
+  #log .e { color: var(--bad); }
+  #log .g { color: var(--ok); }
+  #log .w { color: var(--warn); }
+  audio { width: 100%; margin-top: 14px; }
+  .note { font-size: 12px; color: var(--ink-dim); margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>TTS Console</h1>
+    <span class="sub">set a voice, then stream text at it</span>
+  </header>
+  <div class="bar">
+    <span class="pill" id="p-health">connecting…</span>
+    <span class="pill" id="p-engine">engine —</span>
+    <span class="pill" id="p-voice">voice —</span>
+    <span class="pill" id="p-queue">queue —</span>
+  </div>
+
+  <!-- ─────────────── 1. the active voice ─────────────── -->
+  <section class="card">
+    <h2>1 · Active voice</h2>
+    <p class="hint">
+      <code>POST /v1/voice</code> — every WebSocket turn that names no voice of its own
+      uses this one, until you replace or clear it. The transcript must be the clip's
+      <strong>exact</strong> words: a wrong one is not an error, just a worse voice.
+    </p>
+
+    <label for="v-file">Reference clip (~10 s of clean speech, one speaker)</label>
+    <input type="file" id="v-file" accept="audio/*">
+
+    <label for="v-text">Exact transcript of that clip</label>
+    <textarea id="v-text" placeholder="Type, word for word, what is said in the clip."></textarea>
+
+    <div class="actions">
+      <button class="primary" id="v-set">Set active voice</button>
+      <button id="v-refresh">Refresh</button>
+      <button class="danger" id="v-clear">Clear</button>
+    </div>
+
+    <div class="voice" id="v-card">
+      <div class="kv">
+        <span>voice_id <b id="v-id">—</b></span>
+        <span>length <b id="v-dur">—</b></span>
+        <span>size <b id="v-size">—</b></span>
+        <span>set <b id="v-when">—</b></span>
+      </div>
+      <div class="quote" id="v-quote"></div>
+      <audio id="v-audio" controls preload="none"></audio>
+    </div>
+  </section>
+
+  <!-- ─────────────── 2. streaming ─────────────── -->
+  <section class="card">
+    <h2>2 · Speak — WebSocket</h2>
+    <p class="hint">
+      <code>ws /v1/tts/live</code> — text in as you produce it, audio out as it decodes.
+      The <code>started</code> frame reports which <code>voice_id</code> you actually got.
+      <code>pcm</code> and <code>wav</code> play live through the Web Audio API, buffered
+      just deeply enough to play without breaking up; <code>mp3</code> and
+      <code>flac</code> need a decoder, so they are collected and played at the end.
+    </p>
+
+    <label for="s-text">Text to speak</label>
+    <textarea id="s-text" rows="3">Hello. This should be coming out in the voice I just set. [laugh] Let us hear the second sentence too.</textarea>
+
+    <div class="row">
+      <div>
+        <label for="s-format">Format</label>
+        <select id="s-format">
+          <option value="pcm" selected>pcm — live playback, lowest latency</option>
+          <option value="wav">wav — live playback, with a header</option>
+          <option value="mp3">mp3</option>
+          <option value="flac">flac</option>
+        </select>
+      </div>
+      <div>
+        <label for="s-temp">Temperature</label>
+        <input type="number" id="s-temp" value="0.8" min="0.1" max="1.0" step="0.05">
+      </div>
+      <div>
+        <label for="s-seed">Seed (blank = random)</label>
+        <input type="text" id="s-seed" placeholder="e.g. 12345">
+      </div>
+      <div>
+        <label for="s-playback">Playback</label>
+        <select id="s-playback">
+          <option value="smooth" selected>smooth — buffer enough to play through</option>
+          <option value="asap">lowest latency — start at once, expect stalls</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="checks">
+      <label><input type="checkbox" id="s-active" checked> use the active voice</label>
+      <label><input type="checkbox" id="s-trickle"> trickle text word by word</label>
+    </div>
+
+    <div class="actions">
+      <button class="primary" id="s-go">Speak</button>
+      <button id="s-cancel" disabled>Cancel (barge-in)</button>
+      <button id="s-download" disabled>Download .wav</button>
+    </div>
+
+    <div class="metrics">
+      <span>first audio<b id="m-ttfa">—</b></span>
+      <span>first sound<b id="m-sound">—</b></span>
+      <span>audio<b id="m-dur">—</b></span>
+      <span>buffered<b id="m-buffer">—</b></span>
+      <span>stalls<b id="m-stalls">—</b></span>
+      <span>wall clock<b id="m-wall">—</b></span>
+      <span>realtime factor<b id="m-rtf">—</b></span>
+      <span>voice used<b id="m-voice">—</b></span>
+      <span>seed<b id="m-seed">—</b></span>
+    </div>
+
+    <audio id="s-audio" controls preload="none" style="display:none"></audio>
+  </section>
+
+  <!-- ─────────────── 3. one-shot clone ─────────────── -->
+  <section class="card">
+    <h2>3 · One-shot clone — HTTP</h2>
+    <p class="hint">
+      <code>POST /v1/tts/clone</code> — clones the clip attached to this one request and
+      ignores the active voice entirely. Useful for trying a clip out before committing
+      to it above.
+    </p>
+
+    <label for="c-file">Reference clip</label>
+    <input type="file" id="c-file" accept="audio/*">
+
+    <label for="c-ref">Exact transcript of that clip</label>
+    <textarea id="c-ref"></textarea>
+
+    <label for="c-text">Text to speak in that voice</label>
+    <textarea id="c-text">This came back from a single HTTP request.</textarea>
+
+    <div class="actions">
+      <button class="primary" id="c-go">Clone once</button>
+      <button id="c-copy" title="Copy the clip and transcript up into the active-voice form">Use as active voice</button>
+    </div>
+    <audio id="c-audio" controls preload="none" style="display:none"></audio>
+  </section>
+
+  <!-- ─────────────── log ─────────────── -->
+  <section class="card">
+    <h2>Event log</h2>
+    <p class="hint">Every frame and response, as it happens.</p>
+    <div id="log"></div>
+    <p class="note">
+      Audio playback needs a user gesture in most browsers — if the first run is silent,
+      click anywhere on the page and try again.
+    </p>
+  </section>
+
+</div>
+
+<script>
+"use strict";
+
+/* ───────────────────────── MessagePack (decode only) ─────────────────────────
+   The server replies in msgpack; requests go out as JSON, which the protocol
+   also accepts. Only the decode half is needed, and only the types our frames
+   actually use, so it is ~60 lines here rather than a CDN dependency the GPU
+   host may not be able to reach.                                             */
+
+function mpDecode(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  const utf8 = new TextDecoder();
+  let pos = 0;
+
+  const str = (n) => { const s = utf8.decode(bytes.subarray(pos, pos + n)); pos += n; return s; };
+  const bin = (n) => { const s = bytes.slice(pos, pos + n); pos += n; return s; };
+  const map = (n) => { const o = {}; for (let i = 0; i < n; i++) { const k = next(); o[k] = next(); } return o; };
+  const arr = (n) => { const a = []; for (let i = 0; i < n; i++) a.push(next()); return a; };
+
+  function next() {
+    const b = bytes[pos++];
+    if (b <= 0x7f) return b;                       // positive fixint
+    if (b >= 0xe0) return b - 256;                 // negative fixint
+    if (b >= 0x80 && b <= 0x8f) return map(b & 0x0f);
+    if (b >= 0x90 && b <= 0x9f) return arr(b & 0x0f);
+    if (b >= 0xa0 && b <= 0xbf) return str(b & 0x1f);
+    let n;
+    switch (b) {
+      case 0xc0: return null;
+      case 0xc2: return false;
+      case 0xc3: return true;
+      case 0xc4: n = view.getUint8(pos);  pos += 1; return bin(n);
+      case 0xc5: n = view.getUint16(pos); pos += 2; return bin(n);
+      case 0xc6: n = view.getUint32(pos); pos += 4; return bin(n);
+      case 0xca: n = view.getFloat32(pos); pos += 4; return n;
+      case 0xcb: n = view.getFloat64(pos); pos += 8; return n;
+      case 0xcc: n = view.getUint8(pos);  pos += 1; return n;
+      case 0xcd: n = view.getUint16(pos); pos += 2; return n;
+      case 0xce: n = view.getUint32(pos); pos += 4; return n;
+      case 0xcf: n = Number(view.getBigUint64(pos)); pos += 8; return n;
+      case 0xd0: n = view.getInt8(pos);   pos += 1; return n;
+      case 0xd1: n = view.getInt16(pos);  pos += 2; return n;
+      case 0xd2: n = view.getInt32(pos);  pos += 4; return n;
+      case 0xd3: n = Number(view.getBigInt64(pos)); pos += 8; return n;
+      case 0xd9: n = view.getUint8(pos);  pos += 1; return str(n);
+      case 0xda: n = view.getUint16(pos); pos += 2; return str(n);
+      case 0xdb: n = view.getUint32(pos); pos += 4; return str(n);
+      case 0xdc: n = view.getUint16(pos); pos += 2; return arr(n);
+      case 0xdd: n = view.getUint32(pos); pos += 4; return arr(n);
+      case 0xde: n = view.getUint16(pos); pos += 2; return map(n);
+      case 0xdf: n = view.getUint32(pos); pos += 4; return map(n);
+    }
+    throw new Error("unsupported msgpack byte 0x" + b.toString(16));
+  }
+  return next();
+}
+
+/* ───────────────────────────────── helpers ───────────────────────────────── */
+
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+
+function log(message, kind) {
+  const at = new Date().toLocaleTimeString([], { hour12: false });
+  const line = document.createElement("div");
+  line.innerHTML = `<span class="t">${at}</span> <span class="${kind || ""}">${
+    String(message).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]))
+  }</span>`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+  while (logEl.childElementCount > 400) logEl.removeChild(logEl.firstChild);
+}
+
+const fmtBytes = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+const fmtSecs = (s) => (s == null ? "—" : `${s.toFixed(2)} s`);
+
+async function readError(response) {
+  try {
+    const body = await response.json();
+    return body.error || JSON.stringify(body);
+  } catch (_) {
+    return `${response.status} ${response.statusText}`;
+  }
+}
+
+/* ────────────────────────────── status polling ────────────────────────────── */
+
+async function pollStatus() {
+  try {
+    const health = await (await fetch("/health")).json();
+    const pill = $("p-health");
+    pill.textContent = health.status;
+    pill.className = "pill " + (health.status === "ok" ? "ok" : health.status === "loading" ? "warn" : "bad");
+  } catch (_) {
+    $("p-health").textContent = "unreachable";
+    $("p-health").className = "pill bad";
+    return;
+  }
+  try {
+    const s = await (await fetch("/status")).json();
+    $("p-engine").textContent = `${s.backend} · ${s.device} · ${s.sample_rate || "—"} Hz`;
+    $("p-queue").textContent = `queue ${s.queue_depth} · jobs ${s.active_jobs} · ws ${s.active_sessions}`;
+    const v = s.active_voice;
+    $("p-voice").textContent = v ? `voice ${v.voice_id}` : "no active voice";
+    $("p-voice").className = "pill " + (v ? "ok" : "");
+  } catch (_) { /* /status is best-effort decoration */ }
+}
+
+/* ─────────────────────────── 1 · the active voice ─────────────────────────── */
+
+function showVoice(v) {
+  $("v-card").classList.toggle("on", !!v);
+  if (!v) { $("v-audio").removeAttribute("src"); return; }
+  $("v-id").textContent = v.voice_id;
+  $("v-dur").textContent = v.duration_s != null ? `${v.duration_s.toFixed(1)} s` : "unknown";
+  $("v-size").textContent = fmtBytes(v.size_bytes);
+  $("v-when").textContent = v.created_at ? new Date(v.created_at * 1000).toLocaleTimeString([], { hour12: false }) : "—";
+  $("v-quote").textContent = `“${v.text}”`;
+  // Cache-bust so replacing the voice does not replay the previous clip.
+  $("v-audio").src = `/v1/voice/audio?v=${encodeURIComponent(v.voice_id)}`;
+}
+
+async function loadVoice(quiet) {
+  const response = await fetch("/v1/voice");
+  if (response.status === 404) { showVoice(null); if (!quiet) log("no active voice is set"); return null; }
+  const v = await response.json();
+  showVoice(v);
+  if (!quiet) log(`active voice ${v.voice_id} — “${v.text}”`, "g");
+  return v;
+}
+
+$("v-set").onclick = async () => {
+  const file = $("v-file").files[0];
+  const text = $("v-text").value.trim();
+  if (!file) return log("pick a reference clip first", "e");
+  if (!text) return log("the exact transcript is required — it is what makes the clone work", "e");
+
+  const form = new FormData();
+  form.append("reference_audio", file);
+  form.append("reference_text", text);
+
+  $("v-set").disabled = true;
+  log(`setting active voice from ${file.name} (${fmtBytes(file.size)})…`);
+  try {
+    const response = await fetch("/v1/voice", { method: "POST", body: form });
+    if (!response.ok) { log("set failed: " + await readError(response), "e"); return; }
+    const v = await response.json();
+    showVoice(v);
+    log(`active voice is now ${v.voice_id} — every WebSocket turn uses it from here`, "g");
+    pollStatus();
+  } catch (err) {
+    log("set failed: " + err, "e");
+  } finally {
+    $("v-set").disabled = false;
+  }
+};
+
+$("v-refresh").onclick = () => loadVoice(false);
+
+$("v-clear").onclick = async () => {
+  const body = await (await fetch("/v1/voice", { method: "DELETE" })).json();
+  showVoice(null);
+  log(body.cleared ? "active voice cleared — back to the model's default voice" : "there was no active voice", "w");
+  pollStatus();
+};
+
+/* ─────────────────────── 2 · streaming over the socket ─────────────────────── */
+
+/* ───────────────────────────────── playback ─────────────────────────────────
+   Audio arrives in bursts and is consumed at exactly realtime, so a buffer is
+   the only thing between the two. Two rules decide whether a listener hears
+   speech or hears it break up, and the obvious implementation gets both wrong.
+
+   **Never schedule a gap.** Starting each arriving chunk at
+   `max(currentTime + jitter, nextAt)` looks like it merely absorbs jitter. It
+   does that while the server keeps ahead; the moment it falls behind - which on
+   a card that generates at 0.4x realtime is immediately - `nextAt` is already in
+   the past and every chunk is scheduled at `currentTime + jitter` instead,
+   silently inserting a gap the exact size of the shortfall between every pair of
+   chunks. Measured against this server: 12 gaps totalling 19 s inside 7 s of
+   speech. Here the playout cursor only ever moves forward by the audio actually
+   written to it, so consecutive chunks are sample-contiguous by construction and
+   a shortfall becomes one clean stall rather than a break per chunk.
+
+   **Never start sooner than the buffer can sustain.** A fixed pre-roll cannot
+   know whether it is enough, because what it has to cover is the whole
+   utterance's shortfall, not the network's jitter. `canStart` asks the question
+   the pre-roll was standing in for: at the rate audio is actually being
+   produced, how long would playback run before it ran dry? Below `minRun` it is
+   not worth starting yet, and every stall raises `minRun`, so a stream that
+   keeps breaking converges on a buffer deep enough to play through. When the
+   server outruns playback (`rate >= 1`) none of it binds and playback starts on
+   the first chunk.
+
+   The stall that is genuinely unavoidable is at least made clean: a few
+   milliseconds are held back so the last thing heard is a fade to silence
+   rather than a cut mid-sample, and the resumption is faded in. Both edges are
+   what a click at a block boundary actually is. */
+
+const PUMP_MS = 40;         // how often the buffer is inspected
+const START_FLOOR = 0.12;   // never start playing on less audio than this
+const GUARD = 0.08;         // scheduled audio below this counts as running dry
+const RESERVE = 0.012;      // audio held back, to have something to fade out with
+const FADE = 0.004;         // 4 ms raised-cosine edge either side of a stall
+const MIN_RUN = 2.5;        // shortest uninterrupted stretch worth starting for
+const MIN_RUN_CAP = 30;
+const MAX_LEAD = 20;        // never hold back more than this, however bad the rate
+// The rate measured early in a turn is optimistic - the emit schedule front-loads
+// small blocks, so the first second arrives faster than the rest of the turn will -
+// and the duration estimate is a guess. Buffering this much over the arithmetic is
+// what keeps a slightly wrong input from costing a stall.
+const SAFETY = 1.15;
+
+const player = {
+  ctx: null, rate: 44100,
+  queue: [], queued: 0,     // Float32Array chunks awaiting playout, and their length
+  chunks: [],               // everything received, kept for the .wav download
+  sources: [], nextAt: 0,
+  playing: false, done: false, resume: false, stalledAt: 0,
+  firstAt: 0, received: 0, expected: 0,
+  minRun: MIN_RUN, stalls: 0, stallMs: 0,
+  timer: null,
+
+  begin(rate) {
+    this.ctx = this.ctx || new (window.AudioContext || window.webkitAudioContext)();
+    if (this.ctx.state === "suspended") this.ctx.resume();
+    this.stop();
+    this.rate = rate;
+    this.queue = []; this.queued = 0; this.chunks = [];
+    this.nextAt = 0; this.playing = false; this.done = false;
+    this.resume = false; this.stalledAt = 0;
+    this.firstAt = 0; this.received = 0; this.expected = 0;
+    this.minRun = MIN_RUN; this.stalls = 0; this.stallMs = 0;
+    clearInterval(this.timer);
+    this.timer = setInterval(() => this.pump(), PUMP_MS);
+  },
+
+  /** Hand over one decoded chunk. Returns its duration in seconds. */
+  push(samples) {
+    if (!samples.length || !this.ctx) return 0;
+    // A barge-in stops the pump, but the session stays active and the next
+    // thing said arrives on the same player. Restart it here, or that audio
+    // would only ever be looked at when another chunk happened to land.
+    if (this.timer === null) this.timer = setInterval(() => this.pump(), PUMP_MS);
+    if (!this.firstAt) this.firstAt = performance.now();
+    this.received += samples.length / this.rate;
+    this.queue.push(samples);
+    this.queued += samples.length;
+    this.chunks.push(samples);
+    this.pump();
+    return samples.length / this.rate;
+  },
+
+  /** No more audio is coming; play out whatever is left and stop guarding. */
+  end() { this.done = true; this.pump(); },
+
+  /** Audio seconds delivered per wall second, or null until that is knowable.
+
+     Returning an optimistic 1 while the stream is too young to measure is the
+     one thing this must not do: the first chunk arrives with no elapsed time
+     behind it, so an optimistic guess starts playback on 46 ms of audio and the
+     stall lands a heartbeat later. Waiting for two chunks and a fifth of a
+     second costs far less than that. */
+  rate_() {
+    const wall = (performance.now() - this.firstAt) / 1000;
+    if (this.chunks.length < 2 || wall < 0.2) return null;
+    return this.received / wall;
+  },
+
+  buffered() { return this.queued / this.rate; },
+  scheduled() { return this.ctx ? Math.max(0, this.nextAt - this.ctx.currentTime) : 0; },
+
+  /** Roughly how many seconds of speech this turn will come to, if known.
+
+     With it the player can start as late as it has to and no later. Playback
+     consumes one second per second and the stream refills at `rate`, so a buffer
+     holding `B` seconds covers `t` seconds of playback as long as
+     `B + rate*t >= t`; the binding case is the end of the turn, which makes
+     `B >= (1 - rate) * expected` exactly the condition for reaching it without
+     a stall. Without an estimate there is nothing to aim at but `minRun`, a
+     stretch of uninterrupted speech worth starting for. */
+  expect(seconds) { this.expected = seconds > 0 ? seconds : 0; },
+
+  canStart() {
+    if (this.done) return this.queued > 0;   // nothing more is coming; play it
+    const buffered = this.buffered();
+    if (buffered < START_FLOOR) return false;
+    const r = this.rate_();
+    if (r === null) return false;
+    if (r >= 1) return true;   // arriving faster than it plays: it cannot run dry
+    const horizon = Math.max(this.minRun, this.expected);
+    return buffered >= Math.min(horizon * (1 - r) * SAFETY, MAX_LEAD);
+  },
+
+  take(n) {
+    const out = new Float32Array(n);
+    let at = 0;
+    while (at < n) {
+      const head = this.queue[0];
+      const want = n - at;
+      if (head.length <= want) { out.set(head, at); at += head.length; this.queue.shift(); }
+      else { out.set(head.subarray(0, want), at); this.queue[0] = head.subarray(want); at = n; }
+    }
+    this.queued -= n;
+    return out;
+  },
+
+  emit(samples, fadeIn, fadeOut) {
+    const ctx = this.ctx;
+    const buffer = ctx.createBuffer(1, samples.length, this.rate);
+    const data = buffer.getChannelData(0);
+    data.set(samples);
+    const edge = Math.min(Math.floor(FADE * this.rate), samples.length >> 1);
+    for (let i = 0; i < edge; i++) {
+      const w = 0.5 - 0.5 * Math.cos((Math.PI * i) / edge);
+      if (fadeIn) data[i] *= w;
+      if (fadeOut) data[samples.length - 1 - i] *= w;
+    }
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    // Only ever clamped forward, and only after a stall has already been
+    // accounted for: otherwise the cursor is exactly where the last sample ended.
+    const at = Math.max(this.nextAt, ctx.currentTime + 0.005);
+    source.start(at);
+    this.nextAt = at + buffer.duration;
+    this.sources.push(source);
+  },
+
+  pump() {
+    const ctx = this.ctx;
+    if (!ctx) return;
+
+    if (!this.playing && this.canStart()) {
+      this.playing = true;
+      if (this.stalledAt) {
+        this.stallMs += (ctx.currentTime - this.stalledAt) * 1000;
+        this.stalledAt = 0;
+      }
+      this.nextAt = Math.max(this.nextAt, ctx.currentTime + 0.02);
+    }
+    if (!this.playing) return;
+
+    const reserve = this.done ? 0 : Math.ceil(RESERVE * this.rate);
+    if (this.queued > reserve) {
+      this.emit(this.take(this.queued - reserve), this.resume, false);
+      this.resume = false;
+    } else if (!this.done && this.scheduled() < GUARD) {
+      // What is left cannot cover what is about to play. Spend the reserve on a
+      // fade to silence and go back to buffering: resuming from a deeper buffer
+      // is the only thing that stops this repeating a moment later.
+      if (this.queued) this.emit(this.take(this.queued), this.resume, true);
+      this.playing = false;
+      this.resume = true;
+      this.stalls += 1;
+      this.stalledAt = ctx.currentTime;
+      this.minRun = Math.min(this.minRun * 1.7, MIN_RUN_CAP);
+      onStall();
+    }
+
+    if (this.done && !this.queued && this.scheduled() <= 0) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+  },
+
+  stop() {
+    clearInterval(this.timer);
+    this.timer = null;
+    for (const s of this.sources) { try { s.stop(); } catch (_) {} }
+    this.sources = [];
+    this.queue = []; this.queued = 0;
+    this.nextAt = 0; this.playing = false; this.resume = false; this.stalledAt = 0;
+  },
+
+  /** Wrap everything received so far in a real, fixed-size WAV. */
+  wav() {
+    let total = 0;
+    for (const c of this.chunks) total += c.length;
+    const buffer = new ArrayBuffer(44 + total * 2);
+    const view = new DataView(buffer);
+    const tag = (at, s) => { for (let i = 0; i < s.length; i++) view.setUint8(at + i, s.charCodeAt(i)); };
+    tag(0, "RIFF"); view.setUint32(4, 36 + total * 2, true); tag(8, "WAVE");
+    tag(12, "fmt "); view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, this.rate, true); view.setUint32(28, this.rate * 2, true);
+    view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+    tag(36, "data"); view.setUint32(40, total * 2, true);
+    let at = 44;
+    for (const c of this.chunks) {
+      for (let i = 0; i < c.length; i++, at += 2) {
+        view.setInt16(at, Math.max(-1, Math.min(1, c[i])) * 32767, true);
+      }
+    }
+    return new Blob([buffer], { type: "audio/wav" });
+  },
+};
+
+/** Called by the player whenever it has to stall; wired up in speak(). */
+let onStall = () => {};
+
+/** One `audio` payload -> float samples, skipping a WAV header if one leads it.
+    `cancel` starts a fresh stream and re-sends the header, so this has to be
+    checked on every frame rather than only the first. */
+function pcmSamples(u8) {
+  let at = 0;
+  if (u8.length >= 44 && u8[0] === 0x52 && u8[1] === 0x49 && u8[2] === 0x46 && u8[3] === 0x46) {
+    at = 44;  // "RIFF" - the streaming header app/audio.py writes
+  }
+  const n = (u8.byteLength - at) >> 1;
+  if (n <= 0) return new Float32Array(0);
+  const view = new DataView(u8.buffer, u8.byteOffset + at, n * 2);
+  const samples = new Float32Array(n);
+  for (let i = 0; i < n; i++) samples[i] = view.getInt16(i * 2, true) / 32768;
+  return samples;
+}
+
+const MEDIA = { wav: "audio/wav", mp3: "audio/mpeg", flac: "audio/flac", pcm: "application/octet-stream" };
+let socket = null;
+let bufferTick = null;
+
+/* Characters of text per second of speech. Only used to guess how long a turn
+   will be, so the player knows how much of it it has to cover; it is re-fitted
+   from every completed turn, and a wrong guess costs a stall, not correctness.
+   Starts deliberately low (a long guess over-buffers, a short one stalls). */
+let charsPerSecond = 14;
+
+function speak() {
+  const text = $("s-text").value.trim();
+  if (!text) return log("nothing to say", "e");
+  if (socket) { try { socket.close(); } catch (_) {} }
+
+  const format = $("s-format").value;
+  const request = {
+    format,
+    temperature: parseFloat($("s-temp").value) || 0.8,
+    use_active_voice: $("s-active").checked,
+  };
+  const seed = $("s-seed").value.trim();
+  if (seed) request.seed = parseInt(seed, 10);
+
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/v1/tts/live";
+  socket = new WebSocket(url);
+  socket.binaryType = "arraybuffer";
+
+  let startedAt = 0, ttfa = null, audioMs = 0, frames = 0;
+  const live = format === "pcm" || format === "wav";
+  const playback = $("s-playback").value;
+  let soundAt = null;
+  const collected = [];   // mp3/flac need a decoder, so they are played once complete
+
+  const showBuffer = () => {
+    if (!live) return;
+    if (soundAt === null && player.playing) {
+      soundAt = (performance.now() - startedAt) / 1000;
+      log(`playback started ${soundAt.toFixed(2)} s in, on ` +
+          `${player.buffered().toFixed(1)} s of buffered audio`, "g");
+      $("m-sound").textContent = `${soundAt.toFixed(2)} s`;
+    }
+    $("m-buffer").textContent = `${(player.buffered() + player.scheduled()).toFixed(1)} s`;
+    $("m-stalls").textContent = player.stalls
+      ? `${player.stalls} · ${(player.stallMs / 1000).toFixed(1)} s`
+      : "0";
+  };
+  onStall = () => {
+    log(`playback ran dry — rebuffering to ${player.minRun.toFixed(1)} s of ` +
+        `uninterrupted audio before resuming`, "w");
+    showBuffer();
+  };
+
+  $("s-go").disabled = true;
+  $("s-cancel").disabled = false;
+  $("s-download").disabled = true;
+  $("s-audio").style.display = "none";
+  $("m-ttfa").textContent = $("m-dur").textContent = $("m-wall").textContent = "—";
+  $("m-rtf").textContent = $("m-voice").textContent = $("m-seed").textContent = "—";
+  $("m-buffer").textContent = $("m-stalls").textContent = $("m-sound").textContent = "—";
+  clearInterval(bufferTick);
+  bufferTick = setInterval(showBuffer, 200);
+
+  const send = (frame) => socket.send(JSON.stringify(frame));
+
+  socket.onopen = () => {
+    log(`ws open → start (format=${format}, use_active_voice=${request.use_active_voice})`);
+    startedAt = performance.now();
+    send({ event: "start", request });
+
+    if ($("s-trickle").checked) {
+      // Deliberately drip-feed, to show audio starting before the text ends.
+      const words = text.split(/\s+/);
+      let i = 0;
+      const tick = setInterval(() => {
+        if (i >= words.length || !socket || socket.readyState !== WebSocket.OPEN) {
+          clearInterval(tick);
+          if (socket && socket.readyState === WebSocket.OPEN) send({ event: "stop" });
+          return;
+        }
+        send({ event: "text", text: words[i++] + " " });
+      }, 60);
+    } else {
+      send({ event: "text", text });
+      send({ event: "stop" });
+    }
+  };
+
+  socket.onmessage = (event) => {
+    let frame;
+    try { frame = mpDecode(event.data); }
+    catch (err) { return log("could not decode a frame: " + err, "e"); }
+
+    if (frame.event === "started") {
+      player.begin(frame.sample_rate);
+      if (playback === "smooth") player.expect(text.length / charsPerSecond);
+      else player.minRun = 0.15;   // start on the floor and let it stall
+      $("m-voice").textContent = frame.voice_id || "default";
+      $("m-seed").textContent = frame.seed;
+      log(`started — sample_rate=${frame.sample_rate} format=${frame.format} seed=${frame.seed} voice_id=${frame.voice_id || "null"}`, "g");
+
+    } else if (frame.event === "audio") {
+      frames++;
+      if (ttfa === null) {
+        ttfa = performance.now() - startedAt;
+        $("m-ttfa").textContent = `${(ttfa / 1000).toFixed(2)} s`;
+        log(`first audio after ${(ttfa / 1000).toFixed(2)} s`, "g");
+      }
+      audioMs = frame.time;
+      if (live) player.push(pcmSamples(frame.audio));
+      else collected.push(frame.audio);
+      $("m-dur").textContent = `${(audioMs / 1000).toFixed(2)} s`;
+      showBuffer();
+
+    } else if (frame.event === "log") {
+      log("server: " + frame.message, "w");
+
+    } else if (frame.event === "finish") {
+      const wall = (performance.now() - startedAt) / 1000;
+      $("m-wall").textContent = `${wall.toFixed(2)} s`;
+      if (audioMs > 0) $("m-rtf").textContent = `${(wall / (audioMs / 1000)).toFixed(1)}×`;
+
+      if (frame.reason === "error") log("finish: error — " + frame.error, "e");
+      else log(`finish: ${frame.reason} — ${frames} audio frame(s), ${(audioMs / 1000).toFixed(2)} s of audio in ${wall.toFixed(2)} s`, frame.reason === "stop" ? "g" : "w");
+
+      if (live) {
+        // Everything generated is in hand; the player can stop holding back and
+        // play what is left without guarding against a stall that cannot happen.
+        player.end();
+        if (audioMs > 500) {
+          charsPerSecond = 0.7 * charsPerSecond + 0.3 * (text.length / (audioMs / 1000));
+        }
+        $("s-download").disabled = player.chunks.length === 0;
+      } else if (collected.length) {
+        let total = 0;
+        for (const c of collected) total += c.length;
+        const joined = new Uint8Array(total);
+        let at = 0;
+        for (const c of collected) { joined.set(c, at); at += c.length; }
+        const audio = $("s-audio");
+        audio.src = URL.createObjectURL(new Blob([joined], { type: MEDIA[format] }));
+        audio.style.display = "block";
+        audio.play().catch(() => log("autoplay blocked — press play on the element", "w"));
+      }
+      try { socket.close(); } catch (_) {}
+    }
+  };
+
+  socket.onerror = () => log("websocket error", "e");
+  socket.onclose = (event) => {
+    if (event.code !== 1000 && event.code !== 1005) {
+      log(`ws closed: code ${event.code}${event.reason ? " — " + event.reason : ""}`, "e");
+    }
+    socket = null;
+    clearInterval(bufferTick);
+    showBuffer();
+    $("s-go").disabled = false;
+    $("s-cancel").disabled = true;
+  };
+}
+
+$("s-go").onclick = speak;
+
+$("s-cancel").onclick = () => {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({ event: "cancel" }));
+  player.stop();
+  log("sent cancel — audio should stop within a decode step", "w");
+};
+
+$("s-download").onclick = () => {
+  const url = URL.createObjectURL(player.wav());
+  const a = document.createElement("a");
+  a.href = url; a.download = "speech.wav"; a.click();
+  URL.revokeObjectURL(url);
+};
+
+/* ──────────────────────────── 3 · one-shot clone ──────────────────────────── */
+
+$("c-go").onclick = async () => {
+  const file = $("c-file").files[0];
+  const reference = $("c-ref").value.trim();
+  const text = $("c-text").value.trim();
+  if (!file) return log("pick a reference clip for the one-shot clone", "e");
+  if (!reference) return log("the exact transcript is required", "e");
+  if (!text) return log("nothing to say", "e");
+
+  const form = new FormData();
+  form.append("reference_audio", file);
+  form.append("reference_text", reference);
+  form.append("text", text);
+  form.append("format", "wav");
+
+  $("c-go").disabled = true;
+  const began = performance.now();
+  log("POST /v1/tts/clone …");
+  try {
+    const response = await fetch("/v1/tts/clone", { method: "POST", body: form });
+    if (!response.ok) { log("clone failed: " + await readError(response), "e"); return; }
+    const blob = await response.blob();
+    const audio = $("c-audio");
+    audio.src = URL.createObjectURL(blob);
+    audio.style.display = "block";
+    audio.play().catch(() => {});
+    log(`clone done in ${((performance.now() - began) / 1000).toFixed(2)} s — ` +
+        `${fmtBytes(blob.size)}, seed ${response.headers.get("X-Seed")}, ` +
+        `${response.headers.get("X-Sample-Rate")} Hz`, "g");
+  } catch (err) {
+    log("clone failed: " + err, "e");
+  } finally {
+    $("c-go").disabled = false;
+  }
+};
+
+$("c-copy").onclick = () => {
+  const file = $("c-file").files[0];
+  if (!file) return log("pick a clip in this section first", "e");
+  // DataTransfer is the only way to move a File into another <input type=file>.
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  $("v-file").files = dt.files;
+  $("v-text").value = $("c-ref").value;
+  $("v-file").scrollIntoView({ behavior: "smooth", block: "center" });
+  log("copied into the active-voice form — press “Set active voice”");
+};
+
+/* ──────────────────────────────── start up ──────────────────────────────── */
+
+pollStatus();
+setInterval(pollStatus, 3000);
+loadVoice(true);
+log("ready — set a voice above, then press Speak");
+</script>
+</body>
+</html>

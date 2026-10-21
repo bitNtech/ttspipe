@@ -1,0 +1,11 @@
+description: "CPU-only. Piper Rasa (Tamil + Tanglish) and Piper ljspeech (English runs >= 3 words) via the language router. Measured TTFA p50 241 ms / p95 384 ms on CPU (docs/research/README.md)."
+config:
+  stages:
+    tts:
+      impl: lang_router
+      params: {ta_impl: piper, ta_voice: ta_IN-rasa_female-medium, en_impl: piper, en_voice: en_US-ljspeech-medium,
+               ta_latn_to: ta, min_run_words: 3}
+  voice: {impl: lang_router, voice_id: ""}
+  chunker: {max_chunk_chars: 220, first_chunk_min_words: 4, first_chunk_max_words: 10, first_chunk_max_wait_ms: 400}
+  playback: {jitter_ms: 60, lookahead_chunks: 2}
+  graph: {shadows: {tts: null}}

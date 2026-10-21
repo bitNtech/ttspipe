@@ -1,0 +1,7 @@
+# Core only. The server must start and serve /api/modules with just these.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+numpy>=1.26
+pyyaml>=6.0
+psutil>=5.9
+websockets>=12

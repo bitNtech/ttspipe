@@ -1,0 +1,3 @@
+# tts/fish_s2 — client for the Fish Audio S2-Pro (NF4) GPU server in the parent repo (../). The model and its
+# CUDA/torch stack live in that repo's own .venv; ttsPIPE only needs the wire codec.
+msgpack>=1.0

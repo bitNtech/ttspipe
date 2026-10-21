@@ -1,0 +1,9 @@
+description: "Builtins only (tone engine, passthrough post). Works with core deps only."
+config:
+  playback: {jitter_ms: 60, lookahead_chunks: 2}
+  chunker: {first_chunk_min_words: 4, max_chunk_chars: 220}
+  stages:
+    tts: {impl: tone, params: {}}
+    post: {impl: passthrough, params: {}}
+  voice: {impl: tone, voice_id: tone-f}
+  graph: {shadows: {tts: null}}

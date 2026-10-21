@@ -1,0 +1,3 @@
+# tts/piper — Piper VITS voices (Tamil Rasa + English). piper-tts >= 1.3 is GPL-3.0-or-later (OHF-voice/piper1-gpl).
+piper-tts>=1.3,<2
+onnxruntime>=1.18

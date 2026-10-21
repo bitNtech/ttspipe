@@ -1,0 +1,64 @@
+# Pronunciation overrides and the Tanglish word list (ARCHITECTURE.md §12.4).
+# words.<lang>: whole-word replacements applied by g2p/lexicon. Latin keys match case-insensitively.
+words:
+  en:
+    SBI: S B I
+    UPI: U P I
+    OTP: O T P
+    EMI: E M I
+    KYC: K Y C
+    GST: G S T
+    PAN: pan
+    IRCTC: I R C T C
+    TNEB: T N E B
+    ttsPIPE: T T S pipe
+    prePIPE: pre pipe
+    WhatsApp: whats app
+    Paytm: pay T M
+    PhonePe: phone pay
+    Swiggy: swiggy
+    Zomato: zomato
+  ta:
+    IndiGo: இண்டிகோ
+    Chennai: சென்னை
+    Madurai: மதுரை
+    Coimbatore: கோயம்புத்தூர்
+    Trichy: திருச்சி
+    OTP: ஓ டி பி
+    UPI: யு பி ஐ
+    SBI: எஸ் பி ஐ
+
+# Romanized-Tamil words used by segment/script to tell ta-Latn from English (lowercase).
+tanglish:
+  [enna, enga, eppo, eppadi, epdi, yen, yaen, edhu, ethu, edhukku, ethukku, yaaru, yaar, evlo, evvalavu,
+   naan, nan, naa, nee, ni, neenga, ninga, nenga, avan, aval, avar, avanga, ivan, ival, ivanga, naanga,
+   nanga, namma, nammaloda, unga, ungaloda, enoda, ennoda, unnoda, avanoda, avaloda, ennaku, enakku,
+   unakku, unaku, ungalukku, avangalukku, namakku, enna, ennada, ennadi, enname,
+   romba, rombo, konjam, nalla, nallaa, nallaru, nalladhu, super-ah, semma, sema, mass, gethu, kalakkal,
+   illa, illai, illada, illae, iruku, irukku, irukkum, irundhu, irunthu, irukken, irukkaen, irukkiya,
+   irukeenga, irukkinga, irukkeenga, irundha, irunda, irukka, irukanga, irukkanga,
+   panna, pannu, pannunga, pannuren, pannren, panren, panra, panrom, pannom, pannalaam, pannalam,
+   pannitten, panniten, pannidu, panniduven, pannuvom, pannuvaanga, pannuvanga,
+   vaa, va, vaanga, vanga, vandhu, vanthu, vandhen, vanthen, vandhuttu, vanthutu, varen, varaen, varuven,
+   varuvaanga, varuvanga, varala, vandhudunga, vanthudunga, vandhudu, vanthudu, vara, varum, vandha,
+   po, poo, ponga, poi, poitu, poittu, pochu, pochi, povom, polaam, polam, poren, poraen, pona, ponen,
+   saapdu, sapdu, saaptiya, saptiya, saapteengala, saptingala, saapadu, sapadu, saapittu,
+   sollu, sollunga, solla, sonna, sonnen, sonnaen, solren, solraen, solrom, sollitu, solliten,
+   paaru, paarunga, parunga, paathu, pathu, paatha, patha, paakalam, pakkalam, paaklam, paakren,
+   kudu, kudunga, kodunga, kodu, koduthu, kuduthu, kudukka, kodukka, kuduthen, koduthen,
+   theriyum, theriyuma, theriyala, theriyadhu, theriyathu, puriyudha, puriyutha, puriyala, puriyuthu,
+   seri, sari, saringa, seringa, aamaa, aama, aamam, illaya, illaiya, venam, vendam, vendaam, venum,
+   venumaa, vennum, mudiyum, mudiyadhu, mudiyathu, mudiyala, mudinja, mudichitu, mudichutu,
+   aachu, achu, aagum, aaguthu, aagudhu, aagadhu, aayiduchu, aayidichu, aaidum, aagala, aana, aanaa,
+   inniki, innaiku, innikku, naalaikku, nalaikku, naalaiku, nethu, nethiku, nethikku, ippo, ippa, appo,
+   appa, amma, anna, akka, thambi, thangachi, thangai, machan, machi, maams, da, di, dei, dai, ra, ri,
+   ma, pa, ya, la, le, ku, kku, ah, aa, oda, ode, kitta, kitte, kooda, koda, mela, keezha, ulla, veliya,
+   inga, anga, enge, ange, inge, idhu, adhu, ithu, athu, ivlo, avlo, ivvalavu, appadi, apdi, ippadi,
+   ipdi, eppadiyo, epdiyo, yenna, yennaa, sollava, vaenum, venumna, illana, illanna, irundha, ponum,
+   vanakkam, nandri, romba-nandri, kaalai, maalai, raathiri, ratri, madhiyam, saayangalam,
+   veedu, veettu, veetla, veetula, office-la, kadai, kadaila, ooru, oorla, oorukku, thanni, sappadu,
+   kaasu, kasu, panam, rubaai, rooba, velai, vela, velaiya, vela-ku, time-ku, meeting-ku, late-aa,
+   seekiram, sikiram, mella, medhuva, methuva, udane, udanae, apram, aprom, aparam, aprm, munnadi,
+   pinnadi, mudhal, kadaisi, thirumba, marubadiyum, innum, ennum, ellam, ellaam, ellarum, yarum,
+   onnum, ondrum, oru, rendu, moonu, naalu, anju, aaru, ezhu, ettu, ombodhu, pathu, nooru, aayiram,
+   kandippa, kandipa, nijamaa, nijama, unmaiya, poi-ya, adhaan, athaan, idhaan, ithaan, appuram]

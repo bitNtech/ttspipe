@@ -1,0 +1,10 @@
+description: "English-heavy traffic: Piper ljspeech only, English number wording, no romanized-Tamil detection, 3-word first chunk."
+config:
+  playback: {jitter_ms: 60, lookahead_chunks: 2}
+  chunker: {first_chunk_min_words: 3, max_chunk_chars: 220}
+  stages:
+    tts: {impl: piper, params: {voices: [en_US-ljspeech-medium], threads: 4}}
+    segment: {impl: script, params: {detect_romanized: false}}
+    normalize: {impl: rules, params: {language: en}}
+  voice: {impl: piper, voice_id: en_US-ljspeech-medium}
+  graph: {shadows: {tts: null}}

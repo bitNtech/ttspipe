@@ -1,0 +1,47 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Environment ---
+.venv/
+.venv
+.venv.windows/
+.env
+.python-version
+
+# --- Bootstrapped/downloaded at run.sh time ---
+vendor/
+checkpoints/
+.deps-stamp
+.deps.sha256
+.vendor-stamp
+
+# --- HF cache, if pointed inside the repo ---
+.hf-home/
+
+# --- Runtime artifacts ---
+# The active voice (POST /v1/voice) is written through to disk so it survives
+# a restart. It is per-deployment state, not source -- unlike the named voices
+# under references/<id>/, which are meant to be committed.
+references/_active/
+# Precomputed reference tokens, written next to each clip on first use.
+references/**/*.tokens.pt
+*.wav
+*.mp3
+*.flac
+*.pcm
+*.log
+server.log
+run-preflight.log*
+.venv-scratch/
+.hf-home/
+
+# --- OS/editor cruft ---
+.DS_Store
+*.swp
+.idea/
+.vscode/

@@ -1,0 +1,16 @@
+description: "Balanced engines play; a shadow router with MMS-TTS Tamil (non-commercial licence) synthesizes the same chunks for A/B metrics. Doubles CPU load."
+config:
+  playback: {jitter_ms: 60, lookahead_chunks: 2}
+  chunker: {first_chunk_min_words: 4, max_chunk_chars: 220}
+  stages:
+    tts:
+      impl: lang_router
+      params: {ta_impl: piper, ta_voice: ta_IN-rasa_female-medium, en_impl: piper, en_voice: en_US-ljspeech-medium,
+               ta_latn_to: ta, min_run_words: 3}
+  voice: {impl: lang_router, voice_id: ""}
+  graph:
+    shadows:
+      tts:
+        impl: lang_router
+        params: {ta_impl: mms_tam, ta_voice: default, en_impl: piper, en_voice: en_US-ljspeech-medium, ta_latn_to: ta, min_run_words: 1}
+        voice_id: null

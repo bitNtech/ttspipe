@@ -1,0 +1,54 @@
+# ttsPIPE committed defaults (ARCHITECTURE.md §11). Runtime edits go to data/pipeline.override.yaml.
+audio:
+  out_rate: 24000
+  frame_ms: 20
+stages:
+  ingest:    {enabled: true, impl: plain,   params: {}}
+  normalize: {enabled: true, impl: rules,   params: {}}
+  segment:   {enabled: true, impl: script,  params: {}}
+  chunker:   {enabled: true, impl: punct,   params: {}}
+  g2p:       {enabled: true, impl: lexicon, params: {}}
+  prosody:   {enabled: true, impl: rules,   params: {sentence_pause_ms: 280, clause_pause_ms: 120}}  # people breathe between phrases (Fish ignores speed/pitch, so pauses are the prosody lever left)
+  tts:
+    enabled: true
+    # Fish Audio S2-Pro (NF4) on the GPU via the Fish server in the parent repo, started on demand; Tamil, English and
+    # Tanglish in one voice, plus cloned voices. CPU-only fallback: apply the `balanced` profile (Piper via lang_router).
+    impl: fish_s2
+    params: {temperature: 0.5, top_p: 0.7}   # steadier voice across chunks (default 0.8/0.8 drifts per turn)
+  post:      {enabled: true, impl: master,  params: {}}
+voice: {impl: fish_s2, voice_id: server_active, speed: 1.0, pitch: 0.0}
+playback:
+  lookahead_chunks: 2
+  jitter_ms: 400   # Fish S2-Pro runs at RTF ~1.0-1.3 on an RTX 2050; Piper profiles use 40-120
+  duck_db: 12
+  duck_ramp_ms: 80
+  duck_release_ms: 2000
+  stop_fade_ms: 60
+  crossfade_ms: 8
+  max_silence_gap_ms: 400
+  fill_underrun_silence: true
+  level_every_ticks: 2
+  filler_enabled: true   # play a short natural "hmm"/"ஆங்..." (pre-rendered in the live voice) when TTS stalls
+  filler_after_ms: 800   # first chunk of an utterance not audible after this long
+  filler_gap_ms: 350     # a later chunk not ready this long after the previous one ended
+chunker:
+  first_chunk_min_words: 5
+  first_chunk_max_words: 10
+  first_chunk_max_wait_ms: 400
+  min_chunk_chars: 40
+  max_chunk_chars: 300   # fewer, longer turns: better S2-Pro prosody, less per-turn prefill
+  nonstreaming_max_chunk_chars: 140
+cache: {enabled: true, max_mb: 64}
+renders: {enabled: true, keep: 200}
+events: {queue_size: 2000}
+graph:
+  shadows: {tts: null}
+  positions: {}
+bridge:
+  enabled: false
+  prepipe_url: ""
+  session_map: latest
+  send_reference_audio: false
+  reference_ws_path: /ws/audio
+  map: {barge_in.candidate: duck, barge_in: stop, backchannel: resume}
+active_profile: fish_s2
