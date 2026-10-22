@@ -22,6 +22,9 @@ hand: set a voice, stream text, hear it, barge in.
 field, worked examples, tuning and troubleshooting.
 ⚡ **[docs/LATENCY.md](docs/LATENCY.md)** is how first audio gets to ~55–100 ms, and
 how to drive the server from a voice agent.
+🎙 **[docs/AICA.md](docs/AICA.md)** is the production guide for the AICA voice
+agent: the per-call protocol pattern, auth, output rates, metrics, draining,
+and what hardware streams in realtime.
 
 ---
 
@@ -121,7 +124,9 @@ inference path actually imports rather than the fork's full training stack
 | `app/http/ui.py` | Serves `static/index.html`, the browser console. |
 | `app/voice.py` | The active voice: validation, and write-through to `references/_active/`. |
 | `app/synthesis.py` | One-shot synthesis: the whole text up front, output still streamed. |
-| `app/audio.py` | Incremental encoders. Never buffers a whole utterance. |
+| `app/audio.py` | Incremental encoders and streaming sample-rate conversion. Never buffers a whole utterance. |
+| `app/security.py` | API-key check for HTTP and WebSocket, before the handshake. |
+| `app/metrics.py` | Prometheus `/metrics`, no dependency. |
 | `app/engine/base.py` | The `TTSEngine` contract — the only thing the transport layer knows about. |
 | `app/engine/worker.py` | Single GPU worker thread with token-level cancellation. |
 | `app/engine/references.py` | Reference-clip encoding and caching for voice cloning. |
@@ -160,7 +165,7 @@ server reachable from a browser console or `websocat` with no msgpack codec.
 
 | Event | Payload | Meaning |
 | --- | --- | --- |
-| `start` | `{"request": {...}, "debug": false}` | Open an utterance. Sets the voice and sampling parameters for everything that follows. |
+| `start` | `{"request": {...}, "debug": false, "context_id": null}` | Open an utterance. Sets the voice and sampling parameters for everything that follows. A `context_id` (≤128 chars) is echoed on this turn's `started`/`audio`/`finish` frames. |
 | `text` | `{"text": "a fragment "}` | Append text. Send it as fast as you produce it. |
 | `flush` | — | Speak whatever is buffered right now, without waiting for a sentence boundary. |
 | `stop` | — | No more text. Drain the buffer, then finish. |
@@ -173,7 +178,8 @@ The `request` object of a `start` frame:
 | --- | --- | --- | --- |
 | `text` | str | `""` | Optional initial text; usually you stream instead. |
 | `language` | str \| null | `null` | Hint, e.g. `en`, `zh`, `ja`. |
-| `format` | `wav`/`pcm`/`mp3`/`flac` | `wav` | `pcm` is headerless int16 — the lowest-latency choice. |
+| `format` | `wav`/`pcm`/`mp3`/`flac`/`mulaw` | `wav` | `pcm` is headerless int16 — the lowest-latency choice. `mulaw` is headerless G.711 for telephony. |
+| `sample_rate` | int \| null | `null` | Output rate: 8000, 16000, 22050, 24000, 32000, 44100 or 48000. `null` is the native 44.1 kHz (or `TTS_DEFAULT_SAMPLE_RATE`). Converted server-side by a streaming resampler. |
 | `references` | list of `{audio, text}` | `[]` | Voice cloning. `audio` is raw bytes, or base64 over JSON. `text` must be the clip's exact transcript. |
 | `reference_id` | str \| null | `null` | Use a previously cached voice instead of resending the clip. |
 | `seed` | int \| null | `null` | Drawn once per session when omitted, so every segment shares a voice. |
@@ -235,7 +241,25 @@ realtime factor, streams text word by word, and can demonstrate barge-in.
   uses it, and the `started` frame's `voice_id` confirms which one you got.
   `GET` it for metadata, `GET /v1/voice/audio` for the clip, `DELETE` to clear.
   It persists to `references/_active/`, so a restart keeps the voice.
-- `GET /` — the browser console (`static/index.html`).
+- `GET /` — the browser console (`static/index.html`), including a streaming
+  test panel that drives any `ws://` or `wss://` endpoint the way an agent
+  does and reports first-audio latency, realtime factor, the buffer gapless
+  playback needs, and barge-in timing.
+- `POST /v1/tts` — speak `text` in the server's voice, audio streamed as it
+  decodes. JSON or form body; takes every `start`-frame request field
+  (`format`, `sample_rate`, `reference_id`, `seed`, ...). `X-Voice-Id` says
+  which voice spoke.
+- `POST /v1/audio/speech` — the same, OpenAI-compatible (`input`, `voice`,
+  `response_format` of mp3/wav/flac/pcm), so stock OpenAI TTS clients in
+  LiveKit, Pipecat or the `openai` SDK work with a base-URL change. OpenAI
+  voice names mean the active voice; `"model"` means the uncloned model voice;
+  anything else names a voice under `references/`. `pcm` is 24 kHz, as OpenAI
+  defines it.
+- `GET /v1/voices` — the active voice and every named voice under
+  `references/<id>/` (a clip plus same-stem `.lab` transcript), usable as
+  `reference_id`.
+- `GET /v1/info` — formats, sample rates, defaults, limits and routes, for a
+  client to configure itself from.
 - `POST /v1/tts/clone` — one-shot voice cloning. `multipart/form-data` (the
   clip as a file part) or `application/json` (base64), with `reference_audio`,
   `reference_text` and `text`. The response body is the audio, streamed as it
@@ -243,12 +267,27 @@ realtime factor, streams text word by word, and can demonstrate barge-in.
   `reference_text` must be the clip's **exact** transcript — see
   [docs/USAGE.md](docs/USAGE.md#the-transcript-must-be-exact) for why that
   matters more than it looks.
-- `GET /health` — liveness and readiness. Returns **200 while the model is still
+- `GET /health` — liveness. Returns **200 while the model is still
   loading** (with `"status": "loading"`) so orchestrators do not kill a container
-  during a slow first start; 503 only on a genuine load failure.
+  during a slow first start; 503 only on a genuine load failure or a dead
+  engine worker thread.
+- `GET /ready` — readiness: 200 only when a request would be served now; 503
+  while loading, warming up or draining.
+- `GET /metrics` — Prometheus text format: first-audio latency histograms,
+  sessions, turns by outcome, segment failures, engine queue depth.
+- `POST /admin/drain` — refuse new WebSocket sessions and let open ones finish,
+  ahead of a restart. `scripts/drain.sh` wraps it.
 - `GET /status` — engine state, device and VRAM figures, queue depth, request and
   cancellation counters, last measured time-to-first-audio, and the effective
   configuration.
+
+When `TTS_API_KEYS` is set, every route except `/health` and `/ready` needs a
+key: `Authorization: Bearer <key>`, `X-API-Key`, or `?api_key=` for browsers
+(open the console as `/?api_key=<key>`).
+
+**TLS / `wss://`:** set `TTS_SSL_CERTFILE` and `TTS_SSL_KEYFILE` and `run.sh`
+serves `https://` and `wss://` directly; `scripts/make_dev_cert.sh` makes a
+self-signed pair for testing. Behind a TLS-terminating proxy, leave them unset.
 
 ---
 
@@ -260,6 +299,13 @@ and a `.env` file at the repo root is sourced if present. See `.env.example`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `TTS_HOST` / `TTS_PORT` | `0.0.0.0` / `8080` | Bind address. |
+| `TTS_API_KEYS` | *(unset)* | Comma-separated keys. Unset disables auth. |
+| `TTS_CORS_ORIGINS` | *(unset)* | Browser origins allowed cross-origin. |
+| `TTS_LOG_FORMAT` | `text` | `json` for one object per line. |
+| `TTS_DEFAULT_SAMPLE_RATE` | `0` | Output rate for requests that name none; `0` is native. |
+| `TTS_SESSION_IDLE_TIMEOUT_S` | `300` | Close a socket silent this long with nothing in flight. `0` disables. |
+| `TTS_GRACEFUL_SHUTDOWN_S` | `30` | uvicorn's grace period on SIGTERM (`run.sh`). |
+| `TTS_ACCESS_LOG` | `0` | uvicorn access log; off because it records `?api_key=`. |
 | `TTS_DEVICE` | `cuda` | |
 | `TTS_MODEL_REPO` | `scarxity/fish-speech-s2-pro-nf4` | |
 | `TTS_CHECKPOINT_DIR` | `checkpoints/s2-pro-nf4` | |
@@ -272,10 +318,8 @@ and a `.env` file at the repo root is sourced if present. See `.env.example`.
 | `TTS_FULL_LM_HEAD` | `0` | Must stay off while embeddings are offloaded. |
 | `TTS_CODEC_PRECISION` | `auto` | `auto` picks fp32 below sm_80. See hardware quirks. |
 | `TTS_DECODE_CHUNK_FRAMES` | `64` | Bounds codec activation memory (~250 MiB). `0` disables. |
-| `TTS_REFERENCE_ENCODE_DEVICE` | `cpu` | Where new reference clips get encoded. |
 | `TTS_COMPILE` | `0` | `torch.compile`. Big first-call cost; only worth it for long-lived servers. |
 | `TTS_WARMUP` | `1` | Synthesize a throwaway utterance at startup. |
-| `TTS_LAZY_LOAD` | `0` | Defer loading until the first request. |
 | `TTS_PREFIX_CACHE` | `1` | Reuse prompt KV entries across requests instead of re-prefilling the voice. |
 | `TTS_STREAM_FIRST_FRAMES` | `1` | Frames in the first audio block. **The direct TTFA lever** — each frame is ~90 ms. |
 | `TTS_STREAM_MAX_FRAMES` | `4` | Largest block, once audio is already playing. Small on purpose: generation runs at about realtime. |
@@ -291,11 +335,16 @@ and a `.env` file at the repo root is sourced if present. See `.env.example`.
 | `TTS_FUSED_OPS` | `1` | RMS norm and rotary as one kernel each (`app/engine/fusedops.py`). |
 | `TTS_NVRTC_PATH` | — | Where `libnvrtc.so` lives, if not beside `torch`. |
 | `TTS_MIN_SEGMENT_CHARS` | `24` | Lower ⇒ faster first audio, choppier prosody. |
+| `TTS_FIRST_SEGMENT_MIN_CHARS` | `2` | A reply's first segment is cut at its first finished sentence of this length, so an opener like "Sure." is spoken at once. |
+| `TTS_HINT_INCLUDE_SUFFIX` | auto | Speculative prefill also guesses the end-of-turn markers. Auto: on for CUDA, off for CPU. |
+| `TTS_HINT_CHUNK_TOKENS` | `0` (auto) | Positions a speculative prefill writes per call: 4 on CPU (preemptible), one batched call on CUDA. |
+| `TTS_SSL_CERTFILE` / `TTS_SSL_KEYFILE` | *(unset)* | Serve `https://` / `wss://` directly (`run.sh`). |
 | `TTS_MAX_SEGMENT_CHARS` | `220` | Hard cut for text that never punctuates. |
 | `TTS_CHUNK_LENGTH` | `200` | **Bytes** per generated batch within a segment. Matters for non-Latin scripts: Tamil is ~2.76 bytes/char. |
 | `TTS_DEFAULT_FORMAT` | `wav` | |
 | `TTS_MAX_SESSIONS` | `8` | Concurrent WebSocket connections. |
-| `TTS_QUEUE_TIMEOUT_S` | `120` | |
+| `TTS_QUEUE_TIMEOUT_S` | `120` | A segment that gets no audio for this long (queueing included) fails instead of hanging. `0` disables. |
+| `TTS_CPU_THREADS` | `0` | CPU hosts: intra-op threads; `0` is one per logical CPU (hyperthreads included, which measured faster). |
 | `TTS_LOG_LEVEL` | `INFO` | |
 | `TTS_ENGINE` | *(unset)* | Set to `fake` for a GPU-free engine. |
 | `TTS_INSTALL_DEV` | `1` | Install pytest and friends alongside the runtime deps. |
@@ -369,7 +418,14 @@ any machine. Tests that genuinely need CUDA are marked and skipped otherwise.
 
 ## Hardware
 
-Requires an NVIDIA GPU — bitsandbytes NF4 is CUDA-only. Compute capability 7.0+.
+An NVIDIA GPU with compute capability 7.0+ is the serving target. A CPU-only
+profile also exists (`TTS_DEVICE=cpu`, `app/engine/cpu.py`, with AVX-512 and
+AMX kernels in `app/engine/nf4cpu.py`). On a GCP c4-standard-16 it loads in
+~10 s and, with text streamed in at an LLM's pace, gives first audio ~180–240 ms
+after a sentence ends, but it generates ~2.1× slower than realtime, so a
+listener needs about half of each reply buffered before playback can run
+gapless. That suits development and offline rendering, not live calls. See
+[docs/AICA.md](docs/AICA.md#hardware-what-realtime-needs).
 
 ### Measured on a GTX 1650 (4 GB, sm_75, Turing)
 

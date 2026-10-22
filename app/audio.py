@@ -51,6 +51,12 @@ except ImportError:  # pragma: no cover - exercised via UnsupportedFormatError t
 
 _SF_FORMAT = {"mp3": "MP3", "flac": "FLAC"}
 
+#: Output rates a client may ask for. The engine produces its codec's native
+#: rate (44.1 kHz for S2-Pro); anything else is converted on the way out by
+#: `ResamplingEncoder`. Voice-agent stacks overwhelmingly want 16 or 24 kHz,
+#: and telephony wants 8 kHz.
+SUPPORTED_SAMPLE_RATES = (8000, 16000, 22050, 24000, 32000, 44100, 48000)
+
 
 class UnsupportedFormatError(RuntimeError):
     """The requested wire format has no usable streaming encoder here."""
@@ -65,6 +71,25 @@ def float_to_pcm16(samples: np.ndarray) -> bytes:
     clamped = np.clip(np.nan_to_num(samples, copy=True), -1.0, 1.0)
     ints = np.round(clamped * 32767.0).astype("<i2", copy=False)
     return ints.tobytes()
+
+
+def float_to_mulaw(samples: np.ndarray) -> bytes:
+    """float32 mono in [-1, 1] -> G.711 mu-law bytes, one per sample.
+
+    The segment-and-mantissa form of ITU-T G.711, on 14-bit magnitudes, so the
+    bytes match what a telephony stack (Twilio, Asterisk, `audioop.lin2ulaw`)
+    produces from the same int16 samples.
+    """
+    if samples.size == 0:
+        return b""
+    clamped = np.clip(np.nan_to_num(samples, copy=True), -1.0, 1.0)
+    pcm = np.round(clamped * 32767.0).astype(np.int32) >> 2  # 14-bit, arithmetic
+    mask = np.where(pcm < 0, 0x7F, 0xFF)
+    magnitude = np.minimum(np.abs(pcm), 8159) + 33  # clip, then bias
+    segment = np.maximum(np.floor(np.log2(magnitude)).astype(np.int32) - 5, 0)
+    ulaw = (segment << 4) | ((magnitude >> (segment + 1)) & 0x0F)
+    ulaw = np.where(segment > 7, 0x7F, ulaw) ^ mask
+    return ulaw.astype(np.uint8).tobytes()
 
 
 class StreamEncoder:
@@ -91,6 +116,23 @@ class PCMEncoder(StreamEncoder):
 
     def encode(self, chunk: "AudioChunk") -> bytes:
         return float_to_pcm16(chunk.samples)
+
+    def finalize(self) -> bytes:
+        return b""
+
+
+class MulawEncoder(StreamEncoder):
+    """Headerless G.711 mu-law, 8 bits a sample. What phone networks carry.
+
+    Meant to be paired with `sample_rate: 8000`; at any other rate it is still
+    valid mu-law, just not something a telephony provider will accept.
+    """
+
+    def header(self) -> bytes | None:
+        return None
+
+    def encode(self, chunk: "AudioChunk") -> bytes:
+        return float_to_mulaw(chunk.samples)
 
     def finalize(self) -> bytes:
         return b""
@@ -185,28 +227,89 @@ class _SoundfileEncoder(StreamEncoder):
         return self._drain()
 
 
-def create_encoder(fmt: str, sample_rate: int, channels: int = 1) -> StreamEncoder:
-    """Build a `StreamEncoder` for `fmt`, or raise `UnsupportedFormatError`."""
+class ResamplingEncoder(StreamEncoder):
+    """Convert each chunk to `out_rate`, then hand it to the real encoder.
+
+    Uses soxr's streaming resampler, which carries its filter state from one
+    chunk to the next, so chunk boundaries are seamless - resampling each chunk
+    on its own would put a click at every one. The price is the filter's group
+    delay: a few milliseconds of every chunk's tail are held back and leave
+    with the next one, and `finalize()` flushes the last of them. That delay
+    never accumulates; it is the same few milliseconds for the whole stream.
+    """
+
+    def __init__(self, inner: StreamEncoder, in_rate: int, out_rate: int) -> None:
+        import soxr
+
+        self._inner = inner
+        self._in_rate = in_rate
+        self._out_rate = out_rate
+        self._stream = soxr.ResampleStream(in_rate, out_rate, 1, dtype="float32", quality="HQ")
+        self._done = False
+
+    def _chunk(self, samples: np.ndarray) -> "AudioChunk":
+        from app.engine.base import AudioChunk
+
+        return AudioChunk(samples=samples, sample_rate=self._out_rate)
+
+    def header(self) -> bytes | None:
+        return self._inner.header()
+
+    def encode(self, chunk: "AudioChunk") -> bytes:
+        if chunk.samples.size == 0:
+            return b""
+        samples = np.ascontiguousarray(chunk.samples, dtype=np.float32)
+        return self._inner.encode(self._chunk(self._stream.resample_chunk(samples)))
+
+    def finalize(self) -> bytes:
+        if self._done:
+            return self._inner.finalize()
+        self._done = True
+        tail = self._stream.resample_chunk(np.zeros(0, dtype=np.float32), last=True)
+        out = self._inner.encode(self._chunk(tail)) if tail.size else b""
+        return out + self._inner.finalize()
+
+
+def create_encoder(
+    fmt: str, sample_rate: int, channels: int = 1, out_rate: int | None = None
+) -> StreamEncoder:
+    """Build a `StreamEncoder` for `fmt`, or raise `UnsupportedFormatError`.
+
+    `sample_rate` is what the engine produces; `out_rate`, when given and
+    different, is what the client receives.
+    """
+    rate = out_rate or sample_rate
+    if out_rate and out_rate not in SUPPORTED_SAMPLE_RATES:
+        raise UnsupportedFormatError(
+            f"sample rate {out_rate} is not one of {list(SUPPORTED_SAMPLE_RATES)}"
+        )
     if fmt == "pcm":
-        return PCMEncoder()
-    if fmt == "wav":
-        return WavEncoder(sample_rate, channels=channels)
-    if fmt in _SF_FORMAT:
-        return _SoundfileEncoder(fmt, sample_rate, channels=channels)
-    raise UnsupportedFormatError(f"unknown audio format {fmt!r}")
+        inner: StreamEncoder = PCMEncoder()
+    elif fmt == "mulaw":
+        inner = MulawEncoder()
+    elif fmt == "wav":
+        inner = WavEncoder(rate, channels=channels)
+    elif fmt in _SF_FORMAT:
+        inner = _SoundfileEncoder(fmt, rate, channels=channels)
+    else:
+        raise UnsupportedFormatError(f"unknown audio format {fmt!r}")
+    if rate != sample_rate:
+        return ResamplingEncoder(inner, sample_rate, rate)
+    return inner
 
 
 def resolve_format(
-    fmt: str, sample_rate: int, channels: int = 1
+    fmt: str, sample_rate: int, channels: int = 1, out_rate: int | None = None
 ) -> tuple[str, StreamEncoder, str | None]:
     """Build an encoder for `fmt`, degrading to wav (with a reason) if unavailable.
 
     Returns (actual_format, encoder, warning_or_None). Callers that already
     told the client which format they'd get (the `started` frame) must call
-    this before sending it, so the reply is honest.
+    this before sending it, so the reply is honest. The output rate is never
+    degraded: `TTSParams` only admits rates `create_encoder` accepts.
     """
     try:
-        return fmt, create_encoder(fmt, sample_rate, channels=channels), None
+        return fmt, create_encoder(fmt, sample_rate, channels, out_rate), None
     except UnsupportedFormatError as exc:
         warning = f"format {fmt!r} unavailable ({exc}); falling back to wav"
-        return "wav", create_encoder("wav", sample_rate, channels=channels), warning
+        return "wav", create_encoder("wav", sample_rate, channels, out_rate), warning

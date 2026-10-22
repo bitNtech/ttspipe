@@ -7,7 +7,7 @@ makes the server reachable from a browser console or `websocat` without a
 msgpack codec.
 
 Client -> server
-    {"event": "start",  "request": {...}, "debug": false}
+    {"event": "start",  "request": {...}, "debug": false, "context_id": str|None}
     {"event": "text",   "text": "a piece of the utterance "}
     {"event": "flush"}                  # speak whatever is buffered, right now
     {"event": "stop"}                   # no more text; drain, then finish
@@ -21,18 +21,28 @@ Server -> client
     {"event": "log",    "message": str}
     {"event": "finish", "reason": "stop"|"cancel"|"error", "error": str|None}
     {"event": "pong"}
+
+When the `start` frame carried a `context_id`, every `started`, `audio` and
+`finish` frame of that turn carries it back, so an agent that has moved on to
+a new turn can drop stale audio by tag instead of by timing. Frames of a turn
+started without one are unchanged, byte for byte.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import re
 from typing import Annotated, Any, Literal
 
 import ormsgpack
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-AUDIO_FORMATS = ("wav", "pcm", "mp3", "flac")
+from app.audio import SUPPORTED_SAMPLE_RATES
+
+AUDIO_FORMATS = ("wav", "pcm", "mp3", "flac", "mulaw")
+
+_REFERENCE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 class ProtocolError(ValueError):
@@ -66,7 +76,11 @@ class TTSParams(BaseModel):
 
     text: str = ""
     language: str | None = None
-    format: Literal["wav", "pcm", "mp3", "flac"] = "wav"
+    format: Literal["wav", "pcm", "mp3", "flac", "mulaw"] = "wav"
+    # Output rate. None means the engine's native rate (44.1 kHz for S2-Pro),
+    # which is also the cheapest: no conversion at all. 16000 or 24000 is what
+    # most agent stacks consume, 8000 with `mulaw` is telephony.
+    sample_rate: int | None = None
 
     references: list[ReferenceAudio] = Field(default_factory=list)
     reference_id: str | None = None
@@ -97,8 +111,23 @@ class TTSParams(BaseModel):
     temperature: Annotated[float, Field(ge=0.1, le=1.0)] = 0.8
 
     @model_validator(mode="after")
+    def _check_sample_rate(self) -> "TTSParams":
+        if self.sample_rate is not None and self.sample_rate not in SUPPORTED_SAMPLE_RATES:
+            raise ValueError(
+                f"sample_rate must be one of {list(SUPPORTED_SAMPLE_RATES)}, got {self.sample_rate}"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _normalise_reference_id(self) -> "TTSParams":
         rid = (self.reference_id or "").strip()
+        # It names a directory under references/, so it must not be able to
+        # name anything else: "../.." would otherwise walk out of it.
+        if rid and not _REFERENCE_ID.fullmatch(rid):
+            raise ValueError(
+                "reference_id must be 1-64 letters, digits, '_' or '-', "
+                f"got {rid[:40]!r}"
+            )
         object.__setattr__(self, "reference_id", rid or None)
         return self
 
@@ -107,6 +136,8 @@ class StartEvent(BaseModel):
     event: Literal["start"] = "start"
     request: TTSParams = Field(default_factory=TTSParams)
     debug: bool = False
+    # Opaque tag echoed on this turn's server frames. See the module docstring.
+    context_id: Annotated[str, Field(max_length=128)] | None = None
 
 
 class TextEvent(BaseModel):
@@ -203,8 +234,19 @@ def _pack(payload: dict) -> bytes:
     return ormsgpack.packb(payload)
 
 
+def _tagged(payload: dict, context_id: str | None) -> dict:
+    if context_id is not None:
+        payload["context_id"] = context_id
+    return payload
+
+
 def started_frame(
-    session_id: str, sample_rate: int, fmt: str, seed: int, voice_id: str | None = None
+    session_id: str,
+    sample_rate: int,
+    fmt: str,
+    seed: int,
+    voice_id: str | None = None,
+    context_id: str | None = None,
 ) -> bytes:
     """`voice_id` answers "whose voice am I about to hear?" without guesswork.
 
@@ -213,27 +255,30 @@ def started_frame(
     difference is audible rather than an error. `None` means no cloning.
     """
     return _pack(
-        {
-            "event": "started",
-            "session_id": session_id,
-            "sample_rate": sample_rate,
-            "format": fmt,
-            "seed": seed,
-            "voice_id": voice_id,
-        }
+        _tagged(
+            {
+                "event": "started",
+                "session_id": session_id,
+                "sample_rate": sample_rate,
+                "format": fmt,
+                "seed": seed,
+                "voice_id": voice_id,
+            },
+            context_id,
+        )
     )
 
 
-def audio_frame(audio: bytes, elapsed_ms: float) -> bytes:
-    return _pack({"event": "audio", "audio": audio, "time": elapsed_ms})
+def audio_frame(audio: bytes, elapsed_ms: float, context_id: str | None = None) -> bytes:
+    return _pack(_tagged({"event": "audio", "audio": audio, "time": elapsed_ms}, context_id))
 
 
 def log_frame(message: str) -> bytes:
     return _pack({"event": "log", "message": message})
 
 
-def finish_frame(reason: str, error: str | None = None) -> bytes:
-    return _pack({"event": "finish", "reason": reason, "error": error})
+def finish_frame(reason: str, error: str | None = None, context_id: str | None = None) -> bytes:
+    return _pack(_tagged({"event": "finish", "reason": reason, "error": error}, context_id))
 
 
 def pong_frame() -> bytes:

@@ -42,20 +42,29 @@ class CancelToken:
     decode step (single-digit milliseconds) rather than one audio segment.
     """
 
-    __slots__ = ("_event",)
+    __slots__ = ("_event", "_parent")
 
-    def __init__(self) -> None:
+    def __init__(self, parent: "CancelToken | None" = None) -> None:
         self._event = threading.Event()
+        self._parent = parent
+
+    def child(self) -> "CancelToken":
+        """A token cancelled with this one, but cancellable on its own too.
+
+        For abandoning one segment (a timeout) without cancelling the turn
+        whose token it was handed.
+        """
+        return CancelToken(self)
 
     def cancel(self) -> None:
         self._event.set()
 
     @property
     def cancelled(self) -> bool:
-        return self._event.is_set()
+        return self._event.is_set() or (self._parent is not None and self._parent.cancelled)
 
     def raise_if_cancelled(self) -> None:
-        if self._event.is_set():
+        if self.cancelled:
             raise Cancelled()
 
 

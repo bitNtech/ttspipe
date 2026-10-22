@@ -56,6 +56,23 @@ class Settings:
     host: str = field(default_factory=lambda: _str("TTS_HOST", "0.0.0.0"))
     port: int = field(default_factory=lambda: _int("TTS_PORT", 8080))
     log_level: str = field(default_factory=lambda: _str("TTS_LOG_LEVEL", "INFO").upper())
+    # "text" for humans, "json" (one object per line) for a log pipeline.
+    log_format: str = field(default_factory=lambda: _str("TTS_LOG_FORMAT", "text").lower())
+    # Comma-separated API keys. Unset means no authentication, which is right
+    # on a loopback-only box and wrong on anything reachable. When set, every
+    # route except /health and /ready wants one (see app/security.py).
+    api_keys: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            k.strip() for k in _str("TTS_API_KEYS", "").split(",") if k.strip()
+        )
+    )
+    # Comma-separated origins allowed to call the HTTP API from a browser.
+    # Empty: no CORS headers at all (same-origin only). "*" allows any.
+    cors_origins: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            o.strip() for o in _str("TTS_CORS_ORIGINS", "").split(",") if o.strip()
+        )
+    )
 
     # --- engine selection ---
     # "fish" (FishSpeech S2-Pro NF4) or "mio" (SPRINGLab/Indic-Mio). Every
@@ -95,9 +112,6 @@ class Settings:
     codec_decode_only: bool = field(
         default_factory=lambda: _bool("TTS_CODEC_DECODE_ONLY", True)
     )
-    reference_encode_device: str = field(
-        default_factory=lambda: _str("TTS_REFERENCE_ENCODE_DEVICE", "cpu")
-    )
     # The 4 GB profile. The embedding table is 155776 x 2560 fp16 (~0.72 GiB);
     # keeping it in host memory and reading only the resident 4097-row slice is
     # what makes S2-Pro fit on a 4 GB card at all. It requires the sliced
@@ -123,7 +137,6 @@ class Settings:
         default_factory=lambda: _str("TTS_CODEC_PRECISION", "auto").lower()
     )
     warmup: bool = field(default_factory=lambda: _bool("TTS_WARMUP", True))
-    lazy_load: bool = field(default_factory=lambda: _bool("TTS_LAZY_LOAD", False))
 
     # --- latency ---
     # Prefill the reference-voice system prompt once and reuse its KV entries.
@@ -157,6 +170,23 @@ class Settings:
     # captured graphs. 0 disables the cap. See GpuWorker._load for why a cap
     # is needed at all on Windows.
     vram_headroom_mb: int = field(default_factory=lambda: _int("TTS_VRAM_HEADROOM_MB", 640))
+    # --- CPU ---
+    # On CPU, bitsandbytes' NF4 matmul dequantises the weight on every call and
+    # measured ~4x slower than a dense bf16 one (AMX/oneDNN). With the RAM to
+    # spare, expand the NF4 checkpoint to dense weights once at load: same
+    # quantised values, ~8 GB resident instead of ~2.5. Ignored on CUDA.
+    cpu_dense: bool = field(default_factory=lambda: _bool("TTS_CPU_DENSE", True))
+    # How the rebuilt layers are served: "nf4" (exact values, AVX-512 and AMX
+    # kernels in app/engine/nf4cpu.py; falls back to bf16 without
+    # AVX512-BF16) or "bf16" (a dense copy, served by oneDNN).
+    cpu_weights: str = field(default_factory=lambda: _str("TTS_CPU_WEIGHTS", "nf4").lower())
+    # Run each decode position through a block as one C++ call (norms, rotary,
+    # KV write, attention, residuals and the NF4 matmuls) - see
+    # app/engine/cpu.py:install_decode_blocks. Needs cpu_weights=nf4.
+    cpu_fused_decode: bool = field(default_factory=lambda: _bool("TTS_CPU_FUSED_DECODE", True))
+    # Intra-op threads for torch on CPU. 0 = one per logical CPU (hyperthreads
+    # measured faster than physical cores only; see app/engine/cpu.py).
+    cpu_threads: int = field(default_factory=lambda: _int("TTS_CPU_THREADS", 0))
     # Frames per emitted audio block, ramping from the first to the largest.
     # One frame is 2048 samples (46.4ms of audio at 44.1kHz) and costs ~43ms
     # to generate on an RTX 2050, so the first block is the biggest term in
@@ -179,8 +209,18 @@ class Settings:
     # position every time a word arrives, so it can crowd out forward progress
     # on the text itself. Which wins is a measurement, not a principle - see
     # docs/LATENCY.md.
-    hint_include_suffix: bool = field(
-        default_factory=lambda: _bool("TTS_HINT_INCLUDE_SUFFIX", True)
+    #
+    # Unset means auto: on for CUDA, where a batch of positions costs about one
+    # and a full hit is worth it; off for CPU, where every new word invalidates
+    # the guessed suffix and redoing it (~5 tokens) costs more than the word
+    # interval - measured 52-56 ms of queueing per segment with it, 0-3 without,
+    # and ~195 ms engine time to first audio either way.
+    hint_include_suffix: bool | None = field(
+        default_factory=lambda: (
+            None
+            if os.environ.get("TTS_HINT_INCLUDE_SUFFIX", "").strip() == ""
+            else _bool("TTS_HINT_INCLUDE_SUFFIX", True)
+        )
     )
     # Most prompt positions one speculative prefill may write. Hints always walk
     # positions one at a time, never batched: a batched prefill is a single
@@ -189,6 +229,11 @@ class Settings:
     # Walking is cancellable every ~48ms, which makes a generous budget safe -
     # and it needs to be generous, because one Tamil word is ~11 tokens.
     hint_max_tokens: int = field(default_factory=lambda: _int("TTS_HINT_MAX_TOKENS", 32))
+    # Positions a hint prefills per forward call, checking for cancellation
+    # between calls. 0 = auto: 4 on CPU (see StreamingGenerator._hint_chunk),
+    # one batched call on CUDA, where the 4-bit kernel makes a batch of 32 cost
+    # about one position. -1 forces the single batched call everywhere.
+    hint_chunk_tokens: int = field(default_factory=lambda: _int("TTS_HINT_CHUNK_TOKENS", 0))
     # Floor on how often a speculative prefill may be issued. This is only a
     # guard against re-tokenising the same text many times a second; what
     # actually bounds the work is `GpuWorker.submit_hint`, which holds one slot
@@ -233,19 +278,42 @@ class Settings:
     # --- streaming behaviour ---
     # Text is held back until a segment looks speakable; these bound that wait.
     min_segment_chars: int = field(default_factory=lambda: _int("TTS_MIN_SEGMENT_CHARS", 24))
+    # ...except a reply's first segment, which is cut at the first finished
+    # sentence of at least this many characters: it alone decides when the
+    # caller hears anything, so "Sure." should not wait for the next sentence.
+    first_segment_min_chars: int = field(
+        default_factory=lambda: _int("TTS_FIRST_SEGMENT_MIN_CHARS", 2)
+    )
     max_segment_chars: int = field(default_factory=lambda: _int("TTS_MAX_SEGMENT_CHARS", 220))
     chunk_length: int = field(default_factory=lambda: _int("TTS_CHUNK_LENGTH", 200))
     default_format: str = field(default_factory=lambda: _str("TTS_DEFAULT_FORMAT", "wav"))
+    # Output rate for requests that name none. 0 keeps the engine's native
+    # rate (44.1 kHz for S2-Pro). Set 16000 or 24000 to match what the agent's
+    # audio pipeline consumes, so no client has to ask.
+    default_sample_rate: int = field(default_factory=lambda: _int("TTS_DEFAULT_SAMPLE_RATE", 0))
 
     # --- concurrency ---
     max_sessions: int = field(default_factory=lambda: _int("TTS_MAX_SESSIONS", 8))
+    # Longest the engine may go without producing anything for a segment -
+    # waiting in the queue behind other sessions included - before the segment
+    # is abandoned with an error instead of hanging the turn. 0 disables.
     queue_timeout_s: float = field(default_factory=lambda: _float("TTS_QUEUE_TIMEOUT_S", 120.0))
+    # Close a WebSocket that has sent nothing for this long while no audio is
+    # in flight, so a client that vanished without a FIN cannot hold one of
+    # `max_sessions` forever. A `ping` frame counts as activity. 0 disables.
+    session_idle_timeout_s: float = field(
+        default_factory=lambda: _float("TTS_SESSION_IDLE_TIMEOUT_S", 300.0)
+    )
 
     def as_dict(self) -> dict:
+        """JSON-safe, and safe to show: API keys are reported as a count."""
         out = {}
         for f in fields(self):
             v = getattr(self, f.name)
-            out[f.name] = str(v) if isinstance(v, Path) else v
+            if f.name == "api_keys":
+                out["api_keys_configured"] = len(v)
+                continue
+            out[f.name] = str(v) if isinstance(v, Path) else list(v) if isinstance(v, tuple) else v
         return out
 
 

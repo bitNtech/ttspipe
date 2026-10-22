@@ -110,10 +110,6 @@ def available() -> bool:
             return False
 
 
-def why_unavailable() -> str | None:
-    return _unavailable
-
-
 def driver():
     """The `libcuda.so.1` handle, for callers that launch kernels themselves."""
     return _driver

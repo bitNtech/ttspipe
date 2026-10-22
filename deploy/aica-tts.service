@@ -1,0 +1,46 @@
+# systemd unit for the TTS server. A template: deploy/install.sh fills in
+# @USER@ and @APP_DIR@ for this host, installs it and enables it at boot.
+#
+#   sudo deploy/install.sh
+#
+# run.sh has already provisioned the venv, vendor checkout and checkpoint on a
+# first interactive run; here it only launches. Configuration comes from
+# .env in the working directory, exactly as for ./run.sh.
+#
+# Stop sequence: ExecStop drains (no new sessions, open ones finish, up to
+# TTS_DRAIN_TIMEOUT_S), then systemd sends SIGTERM and uvicorn gives what is
+# left TTS_GRACEFUL_SHUTDOWN_S more. TimeoutStopSec must cover both.
+
+[Unit]
+Description=AICA streaming TTS server (Fish Speech S2-Pro)
+After=network-online.target
+Wants=network-online.target
+# The model takes minutes to load; do not give up after a handful of crashes.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=@USER@
+WorkingDirectory=@APP_DIR@
+ExecStart=@APP_DIR@/run.sh --skip-install --skip-download --skip-preflight
+ExecStop=@APP_DIR@/scripts/drain.sh
+KillSignal=SIGTERM
+TimeoutStartSec=600
+TimeoutStopSec=120
+# Any exit, clean or not, brings it back.
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+# The home directory is read-only below, so caches that default to ~/.cache
+# (the CPU NF4 kernel is compiled by torch's load_inline) live in the app dir.
+Environment=XDG_CACHE_HOME=@APP_DIR@/.cache
+Environment=TORCH_EXTENSIONS_DIR=@APP_DIR@/.cache/torch_extensions
+# Hardening that does not get in the way of the model or the kernel cache.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=@APP_DIR@
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+# Public front door for the TTS server. A template: deploy/install.sh fills in
+# @SITE@ (TTS_PUBLIC_DOMAIN from .env, or :80 when unset) and @PORT@, and
+# installs it as /etc/caddy/Caddyfile.
+#
+# With a domain, Caddy gets and renews a Let's Encrypt certificate on its own,
+# serves https:// and wss://, and redirects http:// there. That needs the
+# domain's A record to point at this host and ports 80 and 443 open to it.
+#
+# Access logging stays off: browsers put ?api_key= in the query string.
+
+@SITE@ {
+	encode {
+		# Audio is incompressible; never buffer a stream to compress it.
+		match {
+			header Content-Type text/*
+			header Content-Type application/json*
+		}
+		gzip
+	}
+	reverse_proxy 127.0.0.1:@PORT@ {
+		# Stream audio as it is generated instead of buffering responses.
+		flush_interval -1
+	}
+}

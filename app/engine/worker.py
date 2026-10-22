@@ -281,6 +281,10 @@ class GpuWorker:
         return self._ready.is_set() and not self._load_error
 
     @property
+    def alive(self) -> bool:
+        return self._thread.is_alive()
+
+    @property
     def queue_depth(self) -> int:
         return self._jobs.qsize()
 
@@ -344,6 +348,8 @@ class GpuWorker:
         with self._hint_lock:
             self._wake_queued = False
             until = self._wake_until
+        if torch.device(self._device).type != "cuda":
+            return  # GPU clock warm-up; on CPU it would only burn the cores
         if self._wake_buf is None:
             self._wake_buf = torch.zeros((512, 512), dtype=torch.float16, device=self._device)
         buf = self._wake_buf
@@ -436,9 +442,9 @@ class GpuWorker:
             logger.info(
                 "codec precision auto-selected: %s (sm_%d%d)", choice, cap[0], cap[1]
             )
-        if choice not in ("fp16", "fp32"):
-            raise RuntimeError(f"TTS_CODEC_PRECISION must be auto/fp16/fp32, got {choice!r}")
-        return torch.float16 if choice == "fp16" else torch.float32
+        if choice not in ("fp16", "bf16", "fp32"):
+            raise RuntimeError(f"TTS_CODEC_PRECISION must be auto/fp16/bf16/fp32, got {choice!r}")
+        return {"fp16": torch.float16, "bf16": torch.bfloat16}.get(choice, torch.float32)
 
     def _apply_memory_profile(self) -> None:
         """Export the fork's FISH_* switches from Settings.
@@ -477,6 +483,14 @@ class GpuWorker:
         settings = self._settings
         device = settings.device
         precision = torch.float16 if settings.half else torch.bfloat16
+        on_cpu = torch.device(device).type == "cpu"
+        if on_cpu:
+            from app.engine.cpu import configure_threads, install_topk_sampler
+
+            configure_threads(settings.cpu_threads)
+            install_topk_sampler()
+            # fp16 matmuls on CPU are emulated; bf16 runs on AMX/AVX512-BF16.
+            precision = torch.bfloat16
 
         if torch.cuda.is_available() and torch.device(device).type == "cuda":
             # On Windows the driver does not fail an allocation that exceeds
@@ -530,6 +544,16 @@ class GpuWorker:
                 max_length=settings.max_seq_len,
                 bnb4=settings.bnb4,
             )
+        if on_cpu and settings.bnb4 and settings.cpu_dense:
+            from app.engine.cpu import densify
+
+            if densify(model, precision, settings.cpu_weights) and (
+                settings.cpu_weights == "nf4" and settings.cpu_fused_decode
+            ):
+                from app.engine.cpu import install_decode_blocks, install_fast_first_position
+
+                install_decode_blocks(model)
+                install_fast_first_position(model)
         if torch.device(device).type == "cuda" and settings.host_codebook_embeddings:
             from app.engine.hostembed import install as install_hostembed
 
@@ -541,7 +565,8 @@ class GpuWorker:
         # through our own kernel roughly halves the per-frame cost; if it
         # cannot be built it says so and bitsandbytes serves every call as
         # before.
-        if settings.bnb4 and settings.fast_gemv:
+        # The hand-written kernels below are CUDA (NVRTC); CPU skips them.
+        if settings.bnb4 and settings.fast_gemv and not on_cpu:
             from app.engine.nf4gemv import install as install_gemv
 
             install_gemv(model)
@@ -549,7 +574,7 @@ class GpuWorker:
         # What is left of a frame once the matmuls are fast is 235 RMS norms
         # and 152 rotary embeddings, each written as six to nine separate
         # elementwise operations on a few kilobytes. One kernel each.
-        if settings.fused_ops:
+        if settings.fused_ops and not on_cpu:
             from app.engine.fusedops import install as install_fused
 
             install_fused()
@@ -580,7 +605,10 @@ class GpuWorker:
             # weights fp32, which is what pre-Ampere cards need.
             precision=(
                 codec_precision
-                if (settings.codec_decode_only and codec_precision is torch.float16)
+                if (
+                    settings.codec_decode_only
+                    and codec_precision in (torch.float16, torch.bfloat16)
+                )
                 else None
             ),
         )
@@ -616,13 +644,14 @@ class GpuWorker:
             settings.stream_first_frames, settings.stream_max_frames
         )
         self._codec_stream = None
-        if graphs is not None:
+        if graphs is not None or on_cpu:
             from app.engine.codecstream import StreamingCodec
 
             sizes = sorted({1 << i for i in range(max(self._emit_schedule).bit_length())})
             self._codec_stream = StreamingCodec(codec, max_frames=settings.max_seq_len, sizes=sizes)
             self._codec_stream.warm(model.config.num_codebooks)
-            torch.cuda.empty_cache()
+            if not on_cpu:
+                torch.cuda.empty_cache()
 
         logger.info(
             "FishSpeech worker loaded (device=%s precision=%s bnb4=%s codec_decode_only=%s)",

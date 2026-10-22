@@ -22,6 +22,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import os
 import time
 from pathlib import Path
 
@@ -45,7 +46,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--text", required=True, help="Text to synthesize")
     p.add_argument("--ref-audio", help="Path to a reference/prompt clip for voice cloning")
     p.add_argument("--ref-text", help="Exact transcript of --ref-audio")
-    p.add_argument("--format", default="wav", choices=("wav", "pcm", "mp3", "flac"))
+    p.add_argument("--format", default="wav", choices=("wav", "pcm", "mp3", "flac", "mulaw"))
+    p.add_argument(
+        "--sample-rate",
+        type=int,
+        default=None,
+        help="Output rate, e.g. 16000 or 24000 (8000 with --format mulaw). Default: native.",
+    )
+    p.add_argument(
+        "--api-key",
+        default=os.environ.get("TTS_API_KEY"),
+        help="Sent as 'Authorization: Bearer'. Defaults to $TTS_API_KEY.",
+    )
     p.add_argument("--out", default="out.wav", help="Where to write the received audio")
     p.add_argument(
         "--stream-text",
@@ -67,6 +79,8 @@ def parse_args() -> argparse.Namespace:
 
 async def run(args: argparse.Namespace) -> None:
     request: dict = {"format": args.format}
+    if args.sample_rate:
+        request["sample_rate"] = args.sample_rate
     if args.seed is not None:
         request["seed"] = args.seed
     if args.ref_audio:
@@ -81,7 +95,10 @@ async def run(args: argparse.Namespace) -> None:
     t_last_audio: float | None = None
     total_audio_ms = 0.0
 
-    async with websockets.connect(args.url, max_size=None) as ws:
+    headers = {"Authorization": f"Bearer {args.api_key}"} if args.api_key else None
+    async with websockets.connect(
+        args.url, max_size=None, additional_headers=headers, compression=None
+    ) as ws:
         await ws.send(_pack({"event": "start", "request": request}))
 
         async def sender() -> None:

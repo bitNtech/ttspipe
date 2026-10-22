@@ -108,10 +108,6 @@ class IncrementalDecoder:
     def emitted_frames(self) -> int:
         return self._emitted
 
-    @property
-    def pending_frames(self) -> int:
-        return 0 if self._codes is None else self._codes.shape[-1] - self._emitted
-
     def extend(self, codes: "torch.Tensor") -> None:
         """Append newly generated frames, shape (num_codebooks, n)."""
         import torch
@@ -261,7 +257,8 @@ class StreamingCodec:
     buffer a whole large block first.
 
     Each block size is one captured CUDA graph; any span decomposes into
-    powers of two, and the result is the same either way.
+    powers of two, and the result is the same either way. On CPU there is no
+    graph to capture and a span runs eagerly, whatever its length.
     """
 
     def __init__(self, codec, *, max_frames: int, sizes=(1, 2, 4)) -> None:
@@ -275,8 +272,9 @@ class StreamingCodec:
         self._graphs: dict[int, tuple] = {}
         # Shared by this instance's graphs: they replay one at a time, and all
         # state that outlives a replay lives outside the pool.
-        self._pool = torch.cuda.graph_pool_handle()
         self._device = next(codec.parameters()).device
+        self._eager = self._device.type != "cuda"
+        self._pool = None if self._eager else torch.cuda.graph_pool_handle()
         self._dtype = next(codec.parameters()).dtype
         self._states: list = []
         for module in codec.modules():  # state belongs to one instance at a time
@@ -290,7 +288,7 @@ class StreamingCodec:
         # converts every weight tensor on every call - ~3 ms a call of pure
         # layout shuffling, measured, whatever the block size. Stored with
         # channels-last strides they are used as they are.
-        for module in codec.modules():
+        for module in codec.modules() if not self._eager else ():
             if isinstance(module, (torch.nn.Conv1d, torch.nn.ConvTranspose1d)):
                 weight = module.weight.data
                 module.weight.data = (
@@ -422,8 +420,17 @@ class StreamingCodec:
         """Capture one graph per block size. Call once, before first use."""
         import time
 
+        import torch
+
         t0 = time.perf_counter()
         self._num_codebooks = num_codebooks
+        if self._eager:
+            codes = torch.zeros((1, num_codebooks, 1), dtype=torch.long, device=self._device)
+            with torch.inference_mode():  # creates the carried conv states
+                self._run(codes, torch.arange(1, device=self._device))
+            self.reset()
+            logger.info("streaming codec ready (eager, %s)", self._device)
+            return
         for n in self._sizes:
             self._capture(n)
         self.reset()
@@ -441,8 +448,12 @@ class StreamingCodec:
         """
         import torch
 
-        if end > self._length or not self._graphs:
+        if end > self._length or not (self._graphs or self._eager):
             return None
+        if self._eager:
+            with torch.inference_mode():
+                pos = torch.arange(start, end, device=self._device)
+                return self._run(codes[..., start:end], pos)
         pieces = []
         with torch.inference_mode():
             while start < end:

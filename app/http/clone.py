@@ -32,26 +32,26 @@ only truncate the stream and be logged.
 
 from __future__ import annotations
 
-import logging
 import uuid
 
 from fastapi import APIRouter, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from pydantic import ValidationError
 
 from app.config import Settings
-from app.engine.base import EngineError, EngineNotReady, TTSEngine
+from app.engine.base import EngineNotReady
 from app.http.common import (
     UPLOADS_KEY,
     UnsupportedMediaType,
     coerce_audio,
+    engine_or_error,
     error,
     read_body,
+    stream_synthesis,
 )
 from app.protocol import ReferenceAudio, TTSParams
 from app.synthesis import OneShotSynthesis
 
-logger = logging.getLogger("tts.http")
 router = APIRouter()
 
 #: Set by the caller, never inferred from the body. `references` and
@@ -63,14 +63,10 @@ _RESERVED_FIELDS = ("references", "reference_id", "use_active_voice")
 
 @router.post("/v1/tts/clone")
 async def clone(request: Request) -> Response:
-    engine: TTSEngine | None = request.app.state.engine
+    engine, problem = engine_or_error(request)
+    if problem is not None:
+        return problem
     settings: Settings = request.app.state.settings
-    load_error = getattr(request.app.state, "engine_load_error", None)
-
-    if load_error is not None:
-        return error(503, f"engine unavailable: {load_error}", "EngineError")
-    if engine is None or not engine.ready:
-        return error(503, "engine is still loading; poll /health", "EngineNotReady")
 
     try:
         fields = await read_body(request)
@@ -132,46 +128,4 @@ async def clone(request: Request) -> Response:
     except EngineNotReady as exc:
         return error(503, str(exc), "EngineNotReady")
 
-    body = synthesis.stream()
-
-    # Prime the first payload here, while a status line can still be changed.
-    # Everything expensive that can fail cleanly -- reference encoding, model
-    # readiness, the first generation -- fails during this await.
-    try:
-        first = await anext(body, None)
-    except EngineError as exc:
-        await body.aclose()
-        logger.warning("clone %s: synthesis failed before first byte: %s", request_id, exc)
-        return error(500, str(exc), type(exc).__name__)
-
-    async def stream_body():
-        try:
-            if first is not None:
-                yield first
-            async for piece in body:
-                yield piece
-        except EngineError as exc:
-            # The status line is long gone. Truncating is all that is left,
-            # so make sure it is at least visible in the logs.
-            logger.error("clone %s: synthesis failed mid-stream: %s", request_id, exc)
-        finally:
-            await body.aclose()  # cancels the GPU job if the client vanished
-
-    headers = {
-        "X-Request-Id": request_id,
-        "X-Audio-Format": synthesis.format,
-        "X-Sample-Rate": str(synthesis.sample_rate),
-        "X-Seed": str(synthesis.seed),
-    }
-    if synthesis.warning:
-        headers["X-Warning"] = synthesis.warning
-        logger.info("clone %s: %s", request_id, synthesis.warning)
-
-    logger.info(
-        "clone %s: %d segment(s), format=%s seed=%d",
-        request_id,
-        len(synthesis.segments),
-        synthesis.format,
-        synthesis.seed,
-    )
-    return StreamingResponse(stream_body(), media_type=synthesis.media_type, headers=headers)
+    return await stream_synthesis(synthesis, "clone")

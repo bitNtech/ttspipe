@@ -75,7 +75,7 @@ def _collect(ws) -> tuple[bytes, list[dict]]:
 def test_stop_flushes_the_encoder_tail(client, monkeypatch):
     encoders: list[_SentinelEncoder] = []
 
-    def fake_resolve_format(fmt, sample_rate):
+    def fake_resolve_format(fmt, sample_rate, out_rate=None):
         enc = _SentinelEncoder()
         encoders.append(enc)
         return "wav", enc, None

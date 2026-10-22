@@ -17,10 +17,23 @@ Two body encodings are supported on every route that takes a clip:
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import TYPE_CHECKING, Any
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+from app.engine.base import EngineError
+from app.metrics import METRICS
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from app.synthesis import OneShotSynthesis
+
+logger = logging.getLogger("tts.http")
+
+#: Longest text a one-shot request may carry. Generation is serial on one
+#: model worker, so an unbounded body is a way to occupy it for minutes.
+MAX_TEXT_CHARS = 8000
 
 #: A reference clip is ~10s of speech -- a few hundred KB. This is two orders
 #: of magnitude above that: high enough never to reject a legitimate clip
@@ -115,3 +128,65 @@ def coerce_audio(value: Any, field: str) -> bytes | None:
             f"{MAX_CLIP_BYTES // 1024 // 1024} MiB. A reference clip should be ~10s of speech."
         )
     return bytes(value)
+
+
+def engine_or_error(request: Request):
+    """-> (engine, None) when it can serve now, else (None, error response)."""
+    engine = request.app.state.engine
+    load_error = getattr(request.app.state, "engine_load_error", None)
+    if load_error is not None:
+        return None, error(503, f"engine unavailable: {load_error}", "EngineError")
+    if engine is None or not engine.ready:
+        return None, error(503, "engine is still loading; poll /ready", "EngineNotReady")
+    return engine, None
+
+
+async def stream_synthesis(
+    synthesis: "OneShotSynthesis", label: str, headers: dict[str, str] | None = None
+) -> Response:
+    """The response for a prepared one-shot synthesis, streamed as it decodes.
+
+    The first payload is primed here, while a status line can still be
+    changed: everything expensive that can fail cleanly - reference encoding,
+    model readiness, the first generation - fails during this await and
+    becomes a real HTTP error. After that the status line is gone, and a
+    failure can only truncate the body (and is logged, so it is visible).
+    """
+    request_id = synthesis.request_id
+    body = synthesis.stream()
+    try:
+        first = await anext(body, None)
+    except EngineError as exc:
+        await body.aclose()
+        METRICS.http_requests.inc(status="500")
+        logger.warning("%s %s: synthesis failed before first byte: %s", label, request_id, exc)
+        return error(500, str(exc), type(exc).__name__)
+    METRICS.http_requests.inc(status="200")
+
+    async def stream_body():
+        try:
+            if first is not None:
+                yield first
+            async for piece in body:
+                yield piece
+        except EngineError as exc:
+            logger.error("%s %s: synthesis failed mid-stream: %s", label, request_id, exc)
+        finally:
+            await body.aclose()  # cancels the engine job if the client vanished
+
+    out = {
+        "X-Request-Id": request_id,
+        "X-Audio-Format": synthesis.format,
+        "X-Sample-Rate": str(synthesis.sample_rate),
+        "X-Seed": str(synthesis.seed),
+        **(headers or {}),
+    }
+    if synthesis.warning:
+        out["X-Warning"] = synthesis.warning
+        logger.info("%s %s: %s", label, request_id, synthesis.warning)
+    logger.info(
+        "%s %s: %d segment(s), format=%s rate=%d seed=%d",
+        label, request_id, len(synthesis.segments), synthesis.format,
+        synthesis.sample_rate, synthesis.seed,
+    )
+    return StreamingResponse(stream_body(), media_type=synthesis.media_type, headers=out)

@@ -442,7 +442,7 @@ def test_hint_suffix_inclusion_is_configurable():
     can leave nothing to do, but it is re-done at a new position every time a
     word arrives."""
     assert _generator().enabled is True
-    assert Settings().hint_include_suffix is True
+    assert Settings().hint_include_suffix is None  # auto: on for CUDA, off for CPU
     assert Settings(hint_include_suffix=False).hint_include_suffix is False
 
 
@@ -460,14 +460,14 @@ def test_a_hint_never_prefills_more_than_its_budget():
     single slot rather than a queue."""
     from app.engine.base import CancelToken
 
-    generator = _generator(hint_max_tokens=4)
+    generator = _generator(hint_max_tokens=4, hint_chunk_tokens=-1)  # one batched call
     prompt = torch.zeros(11, 60, dtype=torch.long)
     prompt[0] = torch.arange(60)
 
     calls = []
     generator._encode = lambda messages: (prompt, None, None)
     generator._system_message = lambda *a: object()
-    generator._prefill = lambda enc, start, cancel, sequential=None: calls.append(
+    generator._prefill = lambda enc, start, cancel, sequential=None, step=1: calls.append(
         (start, enc.size(1), sequential)
     )
 
@@ -479,6 +479,26 @@ def test_a_hint_never_prefills_more_than_its_budget():
     assert end - start == 4, "a hint ran past its cap"
     assert sequential is None, "a hint overrode the batched/sequential choice"
     assert done == 4
+
+
+def test_a_cpu_hint_walks_in_preemptible_chunks():
+    """On CPU a hint prefills a few positions per call, so a segment cut while
+    it runs waits for one chunk, not for the whole hint."""
+    from app.engine.base import CancelToken
+
+    generator = _generator(hint_max_tokens=12)  # auto chunking; the device is "cpu"
+    prompt = torch.zeros(11, 40, dtype=torch.long)
+    prompt[0] = torch.arange(40)
+    generator._encode = lambda messages: (prompt, None, None)
+    generator._system_message = lambda *a: object()
+    calls = []
+    generator._prefill = lambda enc, start, cancel, sequential=None, step=1: calls.append(
+        (start, enc.size(1), sequential, step)
+    )
+
+    generator.hint("some text still being typed", [], [], CancelToken())
+
+    assert calls == [(0, 12, True, 4)]
 
 
 def test_successive_hints_carry_on_from_where_the_last_one_stopped():
@@ -494,7 +514,7 @@ def test_successive_hints_carry_on_from_where_the_last_one_stopped():
 
     starts = []
 
-    def fake_prefill(enc, start, cancel, sequential=None):
+    def fake_prefill(enc, start, cancel, sequential=None, step=1):
         starts.append(start)
         generator._remember(enc)  # what a completed prefill does
 

@@ -262,3 +262,50 @@ async def warm_active_voice(app_state, voice=None) -> int:
     except Exception:  # noqa: BLE001 - never let a warm-up break the request that triggered it
         logger.warning("could not warm the active voice prefix", exc_info=True)
         return 0
+
+
+def resolve_voice(params, store: "VoiceStore | None"):
+    """Apply the server's active voice, unless the request named its own.
+
+    -> (params, voice_id). Precedence is explicit-beats-ambient: a request
+    carrying `references` or a `reference_id` is answering the voice question
+    itself and is left alone. Only one that says nothing inherits whatever
+    `POST /v1/voice` last set, and `use_active_voice: false` opts out of even
+    that without having to clear the server-wide voice for everyone. A
+    voice_id of None means no cloning: the model's own voice.
+    """
+    from app.protocol import ReferenceAudio
+
+    if params.references:
+        return params, "inline"
+    if params.reference_id:
+        return params, params.reference_id
+    if not params.use_active_voice or store is None:
+        return params, None
+
+    voice = store.get()
+    if voice is None:
+        return params, None
+    reference = ReferenceAudio(audio=voice.audio, text=voice.text)
+    return params.model_copy(update={"references": [reference]}), voice.voice_id
+
+
+def named_voices(root) -> list[dict]:
+    """Voices stored as `references/<id>/` - a clip plus same-stem `.lab`
+    transcript per file, the layout `reference_id` resolves - for listing.
+    The active voice's own directory is reported separately."""
+    out = []
+    if not root.is_dir():
+        return out
+    for path in sorted(root.iterdir()):
+        if not path.is_dir() or path.name.startswith((".", "_")):
+            continue
+        clips = [
+            f for f in sorted(path.iterdir())
+            if f.suffix.lower() in _MEDIA_TYPES and f.with_suffix(".lab").is_file()
+        ]
+        if not clips:
+            continue
+        transcript = clips[0].with_suffix(".lab").read_text(encoding="utf-8", errors="replace").strip()
+        out.append({"id": path.name, "clips": len(clips), "transcript": transcript[:200]})
+    return out

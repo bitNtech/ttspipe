@@ -67,7 +67,6 @@ from app.protocol import (
     FlushEvent,
     PingEvent,
     ProtocolError,
-    ReferenceAudio,
     StartEvent,
     StopEvent,
     TextEvent,
@@ -78,8 +77,9 @@ from app.protocol import (
     pong_frame,
     started_frame,
 )
+from app.metrics import METRICS
 from app.segmenter import SENTENCE_END, Segmenter
-from app.voice import VoiceStore
+from app.voice import VoiceStore, resolve_voice
 
 logger = logging.getLogger("tts.session")
 
@@ -144,6 +144,15 @@ class Session:
         self._hinted_text = ""
         self._last_hint_at = 0.0
         self._last_chunk_at = 0.0
+        self._context_id: str | None = None
+        self._out_rate: int | None = None
+        # When the current stream's first segment became ready, until its
+        # first audio leaves; see `tts_first_audio_seconds` in app/metrics.py.
+        self._awaiting_first_audio_since: float | None = None
+        #: Monotonic time of the last client frame. The router closes a
+        #: session that stays quiet too long while nothing is in flight.
+        self.last_activity = time.monotonic()
+        self._synthesizing = False
         self._worker_task: asyncio.Task[None] = asyncio.ensure_future(self._worker_loop())
 
     @property
@@ -154,9 +163,15 @@ class Session:
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def busy(self) -> bool:
+        """Audio is queued, being generated, or still owed to the client."""
+        return self._synthesizing or not self._segment_queue.empty() or not self.outbound.empty()
+
     # -- event handling (called from the receive loop; never blocks) --
 
     async def handle_event(self, event: ClientEvent) -> None:
+        self.last_activity = time.monotonic()
         if isinstance(event, PingEvent):
             await self.outbound.put(pong_frame())
             return
@@ -204,6 +219,8 @@ class Session:
         if self._closed:
             return
         self._closed = True
+        if self._state != "idle":
+            METRICS.turns.inc(reason="disconnect")
         self._cancel_token.cancel()
         self._discard_encoder()
         self._turn_done.set()
@@ -218,26 +235,8 @@ class Session:
     # -- start / cancel: synchronous, immediate --
 
     def _resolve_voice(self, params: Any) -> tuple[Any, str | None]:
-        """Apply the server's active voice, unless this frame named its own.
-
-        Precedence is explicit-beats-ambient: a frame carrying `references` or
-        a `reference_id` is answering the voice question itself and is left
-        alone. Only a frame that says nothing inherits whatever
-        `POST /v1/voice` last set, and `use_active_voice: false` opts out of
-        even that without having to clear the server-wide voice for everyone.
-        """
-        if params.references:
-            return params, "inline"
-        if params.reference_id:
-            return params, params.reference_id
-        if not params.use_active_voice or self.voices is None:
-            return params, None
-
-        voice = self.voices.get()
-        if voice is None:
-            return params, None
-        reference = ReferenceAudio(audio=voice.audio, text=voice.text)
-        return params.model_copy(update={"references": [reference]}), voice.voice_id
+        """See `app.voice.resolve_voice`; shared with the HTTP routes."""
+        return resolve_voice(params, self.voices)
 
     async def _handle_start(self, event: StartEvent) -> None:
         seed = event.request.seed if event.request.seed is not None else _draw_seed()
@@ -245,10 +244,18 @@ class Session:
             event.request,
             chunk_length=self.settings.chunk_length,
             format=self.settings.default_format,
+            sample_rate=self.settings.default_sample_rate or None,
         )
         params, voice_id = self._resolve_voice(request.model_copy(update={"seed": seed}))
         self._params = params
-        self._segmenter = Segmenter(self.settings.min_segment_chars, self.settings.max_segment_chars)
+        self._context_id = event.context_id
+        self._out_rate = params.sample_rate
+        self._awaiting_first_audio_since = None
+        self._segmenter = Segmenter(
+            self.settings.min_segment_chars,
+            self.settings.max_segment_chars,
+            self.settings.first_segment_min_chars,
+        )
         self._elapsed_ms = 0.0
         self._header_sent = False
         self._cancel_token = CancelToken()
@@ -258,12 +265,21 @@ class Session:
         self._discard_encoder()
         self._turn_done.clear()
 
-        fmt, encoder, warning = resolve_format(params.format, self.engine.sample_rate)
+        fmt, encoder, warning = resolve_format(
+            params.format, self.engine.sample_rate, out_rate=self._out_rate
+        )
         self._encoder = encoder
         if warning:
             await self.outbound.put(log_frame(warning))
         await self.outbound.put(
-            started_frame(self.session_id, self.engine.sample_rate, fmt, seed, voice_id)
+            started_frame(
+                self.session_id,
+                self._out_rate or self.engine.sample_rate,
+                fmt,
+                seed,
+                voice_id,
+                self._context_id,
+            )
         )
         self._state = "active"
         # The client's LLM is about to start writing; spend that time getting
@@ -280,8 +296,12 @@ class Session:
         self._cancel_token = CancelToken()
         self._drain_segment_queue()
         if self._segmenter is not None:
-            self._segmenter.flush()  # discard whatever hadn't been cut yet
-        self.outbound.put_nowait(finish_frame("cancel"))
+            # Discard whatever hadn't been cut yet; what the client says next
+            # is a new reply, and gets the first-segment rule again.
+            self._segmenter.restart()
+        self._awaiting_first_audio_since = None
+        METRICS.turns.inc(reason="cancel")
+        self.outbound.put_nowait(finish_frame("cancel", context_id=self._context_id))
 
         if was_stopping:
             # The turn was already draining, and draining the queue just threw
@@ -311,7 +331,9 @@ class Session:
         fmt = getattr(self._params, "format", None)
         if fmt is None:
             return
-        _fmt, encoder, _warning = resolve_format(fmt, self.engine.sample_rate)
+        _fmt, encoder, _warning = resolve_format(
+            fmt, self.engine.sample_rate, out_rate=self._out_rate
+        )
         self._encoder = encoder
 
     def _maybe_hint(self) -> None:
@@ -395,6 +417,8 @@ class Session:
         if segments:
             # Real work has arrived, so the gap the hint was filling is over.
             self._cancel_hint()
+            if self._awaiting_first_audio_since is None and not self._header_sent:
+                self._awaiting_first_audio_since = time.perf_counter()
         for segment in segments:
             self._segment_queue.put_nowait(segment)
 
@@ -415,10 +439,15 @@ class Session:
                     return
                 if item is _STOP:
                     await self._flush_encoder()
-                    await self.outbound.put(finish_frame("stop"))
+                    METRICS.turns.inc(reason="stop")
+                    await self.outbound.put(finish_frame("stop", context_id=self._context_id))
                     self._end_turn()
                     continue
-                await self._run_segment(item, self._cancel_token)
+                self._synthesizing = True
+                try:
+                    await self._run_segment(item, self._cancel_token)
+                finally:
+                    self._synthesizing = False
 
     async def _run_segment(self, text: str, token: CancelToken) -> None:
         assert self._encoder is not None and self._params is not None
@@ -430,19 +459,23 @@ class Session:
         t0 = time.perf_counter()
         idle_ms = (t0 - self._last_chunk_at) * 1000.0 if self._last_chunk_at else 0.0
         first_at: float | None = None
+        METRICS.segments.inc()
         try:
             async for chunk in self.engine.synthesize(request, token):
                 if token.cancelled:
                     break
                 if first_at is None:
                     first_at = time.perf_counter()
+                    METRICS.segment_first_audio.observe(first_at - t0)
                 await self._emit(chunk)
         except EngineNotReady as exc:
             # The backend is unusable, so nothing else in this turn can work
             # either. End it properly rather than failing one segment at a time.
+            METRICS.segment_failures.inc()
+            METRICS.turns.inc(reason="error")
             await self.outbound.put(log_frame(f"synthesis error: {exc}"))
             self._discard_encoder()
-            await self.outbound.put(finish_frame("error", str(exc)))
+            await self.outbound.put(finish_frame("error", str(exc), self._context_id))
             self._end_turn()
             self._drain_segment_queue()
         except EngineError as exc:
@@ -453,6 +486,7 @@ class Session:
             # the connection with it. Report it and carry on; a turn where every
             # segment fails still ends normally on `stop`, having said so each
             # time.
+            METRICS.segment_failures.inc()
             logger.warning("session %s: skipping a failed segment: %s", self.session_id, exc)
             await self.outbound.put(log_frame(f"skipped a segment: {exc}"))
         finally:
@@ -483,7 +517,7 @@ class Session:
         finally:
             self._encoder = None
         if tail:
-            await self.outbound.put(audio_frame(tail, self._elapsed_ms))
+            await self.outbound.put(audio_frame(tail, self._elapsed_ms, self._context_id))
 
     def _discard_encoder(self) -> None:
         """Close the encoder without sending anything (aborted turn, teardown)."""
@@ -511,5 +545,9 @@ class Session:
         payload += self._encoder.encode(chunk)
         self._elapsed_ms += chunk.duration_s * 1000.0
         self._last_chunk_at = time.perf_counter()
+        METRICS.audio_seconds.inc(chunk.duration_s)
         if payload:
-            await self.outbound.put(audio_frame(payload, self._elapsed_ms))
+            if self._awaiting_first_audio_since is not None:
+                METRICS.first_audio.observe(self._last_chunk_at - self._awaiting_first_audio_since)
+                self._awaiting_first_audio_since = None
+            await self.outbound.put(audio_frame(payload, self._elapsed_ms, self._context_id))

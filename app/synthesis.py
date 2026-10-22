@@ -56,6 +56,7 @@ MEDIA_TYPES = {
     "pcm": "application/octet-stream",
     "mp3": "audio/mpeg",
     "flac": "audio/flac",
+    "mulaw": "audio/basic",
 }
 
 
@@ -87,7 +88,6 @@ class OneShotSynthesis:
         self.engine = engine
         self.settings = settings
         self.request_id = request_id
-        self.sample_rate = engine.sample_rate
 
         from app.protocol import with_server_defaults
 
@@ -95,16 +95,23 @@ class OneShotSynthesis:
             params,
             chunk_length=settings.chunk_length,
             format=settings.default_format,
+            sample_rate=settings.default_sample_rate or None,
         )
+        #: What the client receives, which is not always what the engine makes.
+        self.sample_rate = params.sample_rate or engine.sample_rate
         self.seed = params.seed if params.seed is not None else draw_seed()
         self.params: "TTSParams" = params.model_copy(update={"seed": self.seed})
 
         # Same cuts the WebSocket path would make, just all at once: the
         # segmenter is fed the whole text and then closed.
-        segmenter = Segmenter(settings.min_segment_chars, settings.max_segment_chars)
+        segmenter = Segmenter(
+            settings.min_segment_chars, settings.max_segment_chars, settings.first_segment_min_chars
+        )
         self.segments: list[str] = segmenter.push(text) + segmenter.close()
 
-        fmt, encoder, warning = resolve_format(params.format, self.sample_rate)
+        fmt, encoder, warning = resolve_format(
+            params.format, engine.sample_rate, out_rate=params.sample_rate
+        )
         self.format: str = fmt
         self.warning: str | None = warning
         self._encoder: StreamEncoder | None = encoder

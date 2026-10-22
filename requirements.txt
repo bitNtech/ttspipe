@@ -40,6 +40,8 @@ einops
 einx[torch]==0.2.2
 librosa
 soundfile
+# Streaming sample-rate conversion for `sample_rate` in requests (app/audio.py).
+soxr>=0.3
 resampy
 loguru
 tiktoken>=0.8.0

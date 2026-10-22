@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from contextlib import suppress
 
@@ -25,6 +26,7 @@ from starlette.websockets import WebSocketState
 
 from app.config import Settings
 from app.engine.base import TTSEngine
+from app.metrics import METRICS
 from app.protocol import ProtocolError, decode_client_frame, finish_frame
 from app.session import Session
 
@@ -44,10 +46,16 @@ async def tts_live(websocket: WebSocket) -> None:
     engine: TTSEngine | None = websocket.app.state.engine
     load_error = getattr(websocket.app.state, "engine_load_error", None)
 
+    if getattr(websocket.app.state, "draining", False):
+        METRICS.sessions_rejected.inc(reason="draining")
+        await websocket.close(code=1012, reason="server is draining for a restart")
+        return
     if len(_active_sessions) >= settings.max_sessions:
+        METRICS.sessions_rejected.inc(reason="capacity")
         await websocket.close(code=1013, reason="server at max_sessions capacity")
         return
     if engine is None:
+        METRICS.sessions_rejected.inc(reason="not_ready")
         reason = f"engine unavailable: {load_error}" if load_error else "engine still starting"
         await websocket.close(code=1013, reason=reason[:120])
         return
@@ -55,6 +63,8 @@ async def tts_live(websocket: WebSocket) -> None:
     await websocket.accept()
     session_id = uuid.uuid4().hex
     _active_sessions.add(session_id)
+    METRICS.sessions_total.inc()
+    METRICS.sessions_active.set(len(_active_sessions))
     session = Session(
         engine=engine,
         settings=settings,
@@ -63,9 +73,27 @@ async def tts_live(websocket: WebSocket) -> None:
     )
     logger.info("session %s: connected (%d active)", session_id, len(_active_sessions))
 
+    idle_timeout = settings.session_idle_timeout_s
+
     async def receive_loop() -> None:
         while True:
-            message = await websocket.receive()
+            if idle_timeout > 0:
+                # Poll rather than one long wait: a session that is busy
+                # speaking a long reply is quiet on the inbound side and must
+                # not be cut off for it.
+                try:
+                    message = await asyncio.wait_for(
+                        websocket.receive(), timeout=min(idle_timeout, 5.0)
+                    )
+                except asyncio.TimeoutError:
+                    quiet = time.monotonic() - session.last_activity
+                    if quiet >= idle_timeout and not session.busy:
+                        METRICS.idle_timeouts.inc()
+                        logger.info("session %s: idle for %.0fs, closing", session_id, quiet)
+                        return
+                    continue
+            else:
+                message = await websocket.receive()
             if message["type"] == "websocket.disconnect":
                 return
             data = message.get("bytes")
@@ -106,6 +134,7 @@ async def tts_live(websocket: WebSocket) -> None:
         # queue anymore, whether this connection ended cleanly or not.
         await session.aclose()
         _active_sessions.discard(session_id)
+        METRICS.sessions_active.set(len(_active_sessions))
         logger.info("session %s: closed (%d active)", session_id, len(_active_sessions))
 
         if websocket.client_state == WebSocketState.CONNECTED:

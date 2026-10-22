@@ -269,17 +269,50 @@ class StreamingGenerator:
             rows = model.embeddings(ids)
         return rows.to(self._device, non_blocking=True)
 
+    def _merged_first_span(self) -> int:
+        """Longest uncached prompt tail sampled in the same call that prefills it.
+
+        Splitting off the last position keeps the sampling call at one
+        position, which is what bitsandbytes on a GPU wants. On CPU one more
+        position in a prefill costs a few milliseconds, and a separate
+        single-position pass costs a whole trip through the 36-layer stack
+        (~35 ms of every segment's time to first audio), so it never splits.
+        """
+        import torch
+
+        return 1 << 30 if torch.device(self._device).type == "cpu" else 0
+
+    def _hint_chunk(self) -> int:
+        """Positions per forward call when a hint walks its prompt; 0 = don't walk.
+
+        On CPU a hint batched in one call over more than `nf4cpu.MAX_ROWS`
+        positions goes to the dense bf16 weights and cannot be interrupted, so
+        a segment cut mid-hint waits for all of it (measured 64-128 ms). Four
+        positions run on the NF4 kernel at ~16 ms a token - about twice the
+        rate an LLM emits them - and yield to real work every ~64 ms.
+        """
+        chunk = int(getattr(self._settings, "hint_chunk_tokens", 0) or 0)
+        if chunk < 0:
+            return 0
+        if chunk == 0:  # auto
+            import torch
+
+            return 4 if torch.device(self._device).type == "cpu" else 0
+        return chunk
+
     def _prefill(
         self,
         encoded: "torch.Tensor",
         start: int,
         cancel: CancelToken,
         sequential: bool | None = None,
+        step: int = 1,
     ) -> None:
         """Populate KV entries for positions [start, len) of this prompt.
 
         `sequential` overrides the per-span choice; hints force it so they can
-        never take the batched path's flat cost.
+        never take the batched path's flat cost. A sequential walk advances
+        `step` positions per forward call.
         """
         import time
 
@@ -301,7 +334,9 @@ class StreamingGenerator:
             # throwing that away would make speculative prefill worth much less
             # than it is - the next request would redo work already on the GPU.
             done = start
-            rows = self._gather_prompt_rows(encoded, start, total)
+            # Pre-gathered rows are consumed one per forward call, so they
+            # only fit a walk of single positions.
+            rows = self._gather_prompt_rows(encoded, start, total) if step <= 1 else None
             # `prompt_embedding_batch` serves rows we already gathered;
             # `prompt_embeddings` falls back to one host round trip per step.
             embedding_source = (
@@ -309,18 +344,19 @@ class StreamingGenerator:
             )
             try:
                 with torch.inference_mode(), embedding_source:
-                    for offset in range(total - start):
+                    for offset in range(0, total - start, max(1, step)):
                         cancel.raise_if_cancelled()
                         position = start + offset
-                        input_pos = torch.tensor(
-                            [position], device=self._device, dtype=torch.long
+                        n = min(max(1, step), total - position)
+                        input_pos = torch.arange(
+                            position, position + n, device=self._device, dtype=torch.long
                         )
-                        with kv_window(position + 1):
+                        with kv_window(position + n):
                             self._model.forward_generate(
-                                prompt[:, offset : offset + 1].view(1, codebook_dim, -1),
+                                prompt[:, offset : offset + n].view(1, codebook_dim, -1),
                                 input_pos,
                             )
-                        done = position + 1
+                        done = position + n
             finally:
                 self._remember(encoded[:, :done])
                 del rows
@@ -373,7 +409,11 @@ class StreamingGenerator:
 
         if not text.strip():
             return 0
-        with_suffix = bool(getattr(self._settings, "hint_include_suffix", True))
+        with_suffix = getattr(self._settings, "hint_include_suffix", None)
+        if with_suffix is None:  # auto: see Settings.hint_include_suffix
+            import torch
+
+            with_suffix = torch.device(self._device).type != "cpu"
         messages = [
             self._system_message(prompt_texts, prompt_tokens),
             Message(
@@ -414,7 +454,11 @@ class StreamingGenerator:
         # slot rather than a queue - so at most one uncancellable call can ever
         # be in front of a segment.
         end = min(end, shared + max(1, self._settings.hint_max_tokens))
-        self._prefill(encoded[:, :end], shared, cancel)
+        chunk = self._hint_chunk()
+        if chunk:
+            self._prefill(encoded[:, :end], shared, cancel, sequential=True, step=chunk)
+        else:
+            self._prefill(encoded[:, :end], shared, cancel)
         return end - shared
 
     def warm(self, prompt_texts, prompt_tokens, cancel: CancelToken) -> int:
@@ -584,7 +628,7 @@ class StreamingGenerator:
         # the client is waiting on. Splitting them lets the bulk go through
         # `_prefill` and keeps this sampling call at sequence length 1.
         last = total_len - 1
-        if cacheable and last > shared:
+        if cacheable and last > shared and total_len - shared > self._merged_first_span():
             self._prefill(encoded[:, :last], shared, cancel)
             head = last
         else:

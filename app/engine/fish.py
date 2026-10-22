@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import queue
 import time
 from typing import AsyncIterator
 
@@ -168,7 +169,18 @@ class FishSpeechEngine(TTSEngine):
 
     @property
     def ready(self) -> bool:
-        return self._loaded
+        return self._loaded and not self.worker_dead
+
+    @property
+    def worker_dead(self) -> bool:
+        """The one thread that can run the model is gone; nothing will recover it.
+
+        Its loop never raises by design, so this means something no handler
+        anticipated. Reported through /health as a failure so a supervisor
+        restarts the process instead of every request hanging on a queue
+        nobody reads.
+        """
+        return self._loaded and not self._worker.alive
 
     def status(self) -> EngineStatus:
         return EngineStatus(
@@ -221,14 +233,26 @@ class FishSpeechEngine(TTSEngine):
             raise EngineNotReady("FishSpeech engine has not finished loading")
 
         loop = asyncio.get_running_loop()
-        out_queue = self._worker.submit(request.text, request.params, cancel)
+        # Our own token, so a timeout can abandon this segment without
+        # cancelling the rest of the caller's turn.
+        job_cancel = cancel.child()
+        out_queue = self._worker.submit(request.text, request.params, job_cancel)
+        timeout = self._settings.queue_timeout_s or None
 
         self._total_requests += 1
         self._active_jobs += 1
         completed = False
         try:
             while True:
-                message = await loop.run_in_executor(None, out_queue.get)
+                try:
+                    message = await loop.run_in_executor(None, out_queue.get, True, timeout)
+                except queue.Empty:
+                    job_cancel.cancel()
+                    self._total_failed += 1
+                    raise EngineError(
+                        f"engine produced nothing for {timeout:.0f}s "
+                        f"(queue depth {self._worker.queue_depth}); segment abandoned"
+                    ) from None
                 if isinstance(message, ChunkMessage):
                     yield message.chunk
                 elif isinstance(message, DoneMessage):

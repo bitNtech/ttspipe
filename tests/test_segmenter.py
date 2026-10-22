@@ -242,3 +242,27 @@ def test_interrobang_is_kept_whole():
 def test_an_ordinary_full_stop_still_cuts_where_it_did():
     segmenter = Segmenter(4, 220)
     assert segmenter.push("Hello there. Second one. ") == ["Hello there.", "Second one."]
+
+
+def test_first_segment_is_cut_early_then_the_minimum_applies():
+    """A reply's opener is spoken at once; later short sentences still merge."""
+    s = Segmenter(min_segment_chars=24, max_segment_chars=200, first_min_chars=2)
+    assert s.push("Sure. ") == ["Sure."]
+    assert s.push("Okay. ") == []  # below 24 now, so it waits for company
+    assert s.push("Your order shipped this morning. ") == [
+        "Okay. Your order shipped this morning."
+    ]
+
+
+def test_restart_reapplies_the_first_segment_rule():
+    s = Segmenter(min_segment_chars=24, max_segment_chars=200, first_min_chars=2)
+    assert s.push("Sure. ") == ["Sure."]
+    s.push("half a thought")
+    s.restart()  # barge-in: the buffered text is dropped
+    assert s.pending == ""
+    assert s.push("Right. ") == ["Right."]
+
+
+def test_first_min_defaults_to_the_regular_minimum():
+    s = Segmenter(min_segment_chars=24, max_segment_chars=200)
+    assert s.push("Sure. ") == []

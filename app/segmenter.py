@@ -135,7 +135,12 @@ def _find_word_boundary(buf: str, target: int, limit: int) -> int:
 class Segmenter:
     """Incremental, stateful text-to-segments cutter. One instance per session."""
 
-    def __init__(self, min_segment_chars: int, max_segment_chars: int):
+    def __init__(
+        self,
+        min_segment_chars: int,
+        max_segment_chars: int,
+        first_min_chars: int | None = None,
+    ):
         # A zero minimum lets `_find_cut` legitimately return 0 (a buffer
         # opening with `[`, or a `.` inside a bracket span), and `push` then
         # loops forever on a buffer it never shortens - synchronously, on the
@@ -145,6 +150,12 @@ class Segmenter:
             raise ValueError("segment char bounds must be positive (min at least 1)")
         self.min_segment_chars = min_segment_chars
         self.max_segment_chars = max(max_segment_chars, min_segment_chars + 1)
+        # The first segment of a reply sets its time to first audio, and a
+        # reply that opens "Sure." would otherwise wait for the whole next
+        # sentence to reach `min_segment_chars`. So until one segment has been
+        # cut, any finished sentence of at least this many characters is.
+        self.first_min_chars = max(1, first_min_chars) if first_min_chars else min_segment_chars
+        self._first = True
         self._buf = ""
 
     @property
@@ -168,6 +179,7 @@ class Segmenter:
             self._buf = rest
             if segment:
                 segments.append(segment)
+                self._first = False
         return segments
 
     def flush(self) -> list[str]:
@@ -179,6 +191,12 @@ class Segmenter:
     def close(self) -> list[str]:
         """No more text is coming; same as `flush()`."""
         return self.flush()
+
+    def restart(self) -> None:
+        """Drop whatever is buffered and treat what comes next as a new reply
+        (after a barge-in), first-segment rule included."""
+        self._buf = ""
+        self._first = True
 
     def _find_cut(self, buf: str) -> int | None:
         n = len(buf)
@@ -193,7 +211,7 @@ class Segmenter:
             if ch in SENTENCE_END or ch == "\n":
                 if ch == "\n" or _is_valid_boundary(buf, i):
                     cut = _adjust_cut(_end_of_terminator(buf, i, limit), spans, open_pos)
-                    if cut >= self.min_segment_chars:
+                    if cut >= (self.first_min_chars if self._first else self.min_segment_chars):
                         return cut
             i += 1
 

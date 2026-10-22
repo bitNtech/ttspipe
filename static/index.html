@@ -108,6 +108,17 @@
   #log .e { color: var(--bad); }
   #log .g { color: var(--ok); }
   #log .w { color: var(--warn); }
+  table.results { width: 100%; border-collapse: collapse; margin-top: 14px; font: 12px/1.5 var(--mono); }
+  table.results th, table.results td { text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  table.results th:first-child, table.results td:first-child { text-align: left; }
+  table.results th { color: var(--ink-dim); font-weight: 600; }
+  table.results td.good { color: var(--ok); }
+  table.results td.slow { color: var(--warn); }
+  table.results td.bad { color: var(--bad); }
+  .summary b.good { color: var(--ok); } .summary b.slow { color: var(--warn); } .summary b.bad { color: var(--bad); }
+  .scroll-x { overflow-x: auto; }
+  .summary { margin-top: 10px; font: 12px/1.6 var(--mono); color: var(--ink-dim); }
+  .summary b { color: var(--ink); }
   audio { width: 100%; margin-top: 14px; }
   .note { font-size: 12px; color: var(--ink-dim); margin-top: 10px; }
 </style>
@@ -226,6 +237,81 @@
     <audio id="s-audio" controls preload="none" style="display:none"></audio>
   </section>
 
+  <!-- ─────────────── streaming test ─────────────── -->
+  <section class="card">
+    <h2>Streaming test — ws:// / wss://</h2>
+    <p class="hint">
+      Drives <code>/v1/tts/live</code> the way a voice agent does: text streamed in at an
+      LLM's pace, audio played as it arrives, repeated to get a distribution rather than
+      one lucky number. Point it at any deployment — <code>wss://</code> for one behind
+      TLS (<code>TTS_SSL_CERTFILE</code> or a proxy). Browsers cannot send headers on a
+      WebSocket, so the key travels as <code>?api_key=</code>. A self-signed certificate
+      must be accepted once by opening its <code>https://</code> address in this browser.
+    </p>
+
+    <div class="row">
+      <div style="flex: 3 1 360px">
+        <label for="t-url">WebSocket endpoint</label>
+        <input type="text" id="t-url" spellcheck="false">
+      </div>
+      <div>
+        <label for="t-key">API key (if the server requires one)</label>
+        <input type="text" id="t-key" spellcheck="false" autocomplete="off">
+      </div>
+    </div>
+
+    <label for="t-text">Reply to stream (what the agent's LLM would write)</label>
+    <textarea id="t-text" rows="3">Sure. I can help you with that right now. Your order shipped this morning and should arrive on Friday. Is there anything else you need?</textarea>
+
+    <div class="row">
+      <div>
+        <label for="t-wps">Words per second (0 = send whole)</label>
+        <input type="number" id="t-wps" value="25" min="0" max="200" step="1">
+      </div>
+      <div>
+        <label for="t-rate">Output sample rate</label>
+        <select id="t-rate">
+          <option value="">native</option>
+          <option value="16000">16000</option>
+          <option value="24000" selected>24000</option>
+          <option value="48000">48000</option>
+        </select>
+      </div>
+      <div>
+        <label for="t-runs">Runs</label>
+        <input type="number" id="t-runs" value="3" min="1" max="50" step="1">
+      </div>
+      <div>
+        <label for="t-barge">Barge-in after ms (0 = off)</label>
+        <input type="number" id="t-barge" value="0" min="0" step="100">
+      </div>
+    </div>
+
+    <div class="checks">
+      <label><input type="checkbox" id="t-play" checked> play audio</label>
+      <label><input type="checkbox" id="t-active" checked> use the active voice</label>
+      <label><input type="checkbox" id="t-seed" checked> fixed seed (comparable runs)</label>
+    </div>
+
+    <div class="actions">
+      <button class="primary" id="t-go">Run streaming test</button>
+      <button id="t-stop" disabled>Stop</button>
+      <button id="t-clear">Clear results</button>
+    </div>
+
+    <div class="scroll-x">
+      <table class="results" id="t-table">
+        <thead><tr>
+          <th>run</th><th>connect</th><th>first audio after 1st sentence</th>
+          <th>after last word</th><th>audio</th><th>realtime factor</th>
+          <th>gaps (no pre-roll)</th><th>pre-roll for no gaps</th><th>barge-in → finish</th><th>stale audio</th><th>outcome</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="summary" id="t-summary"></div>
+  </section>
+
   <!-- ─────────────── 3. one-shot clone ─────────────── -->
   <section class="card">
     <h2>3 · One-shot clone — HTTP</h2>
@@ -266,6 +352,28 @@
 
 <script>
 "use strict";
+
+/* API key: when the server has TTS_API_KEYS set, open this page as
+   /?api_key=KEY. The key is kept for this tab and sent as X-API-Key on every
+   request; the WebSocket and <audio> element cannot send headers, so they
+   carry it in the query string instead. */
+const API_KEY = (() => {
+  const fromUrl = new URLSearchParams(location.search).get("api_key");
+  try {
+    if (fromUrl) sessionStorage.setItem("tts_api_key", fromUrl);
+    return fromUrl || sessionStorage.getItem("tts_api_key") || "";
+  } catch (_) { return fromUrl || ""; }
+})();
+const withKey = (path) =>
+  API_KEY ? path + (path.includes("?") ? "&" : "?") + "api_key=" + encodeURIComponent(API_KEY) : path;
+if (API_KEY) {
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init = {}) => {
+    const headers = new Headers(init.headers || {});
+    headers.set("X-API-Key", API_KEY);
+    return nativeFetch(input, { ...init, headers });
+  };
+}
 
 /* ───────────────────────── MessagePack (decode only) ─────────────────────────
    The server replies in msgpack; requests go out as JSON, which the protocol
@@ -384,7 +492,7 @@ function showVoice(v) {
   $("v-when").textContent = v.created_at ? new Date(v.created_at * 1000).toLocaleTimeString([], { hour12: false }) : "—";
   $("v-quote").textContent = `“${v.text}”`;
   // Cache-bust so replacing the voice does not replay the previous clip.
-  $("v-audio").src = `/v1/voice/audio?v=${encodeURIComponent(v.voice_id)}`;
+  $("v-audio").src = withKey(`/v1/voice/audio?v=${encodeURIComponent(v.voice_id)}`);
 }
 
 async function loadVoice(quiet) {
@@ -706,7 +814,7 @@ function speak() {
   const seed = $("s-seed").value.trim();
   if (seed) request.seed = parseInt(seed, 10);
 
-  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/v1/tts/live";
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + withKey("/v1/tts/live");
   socket = new WebSocket(url);
   socket.binaryType = "arraybuffer";
 
@@ -857,6 +965,270 @@ $("s-download").onclick = () => {
   const a = document.createElement("a");
   a.href = url; a.download = "speech.wav"; a.click();
   URL.revokeObjectURL(url);
+};
+
+/* ─────────────────── streaming test over ws:// or wss:// ───────────────────
+   One run is one turn on its own connection, tagged with a context_id so any
+   frame from another turn is visibly ignored. What it measures, per run:
+
+   - **first audio after 1st sentence**: from the moment the word that ends the
+     first sentence was sent to the first audio frame. That is the server's
+     whole share of an agent's response latency - the time before it spent
+     typing does not count, because the LLM was still writing it.
+   - **pre-roll for no gaps**: the smallest buffer a player could start on and
+     never run dry (max over frames of arrival time minus audio already
+     playable). 0 means audio arrives faster than it plays.
+   - **barge-in → finish**: from `cancel` to `finish(cancel)`, and how much
+     audio still arrived after the cancel was sent.                          */
+
+const defaultWsUrl = () =>
+  (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/v1/tts/live";
+$("t-url").value = defaultWsUrl();
+$("t-key").value = API_KEY;
+
+let testStop = null;   // set while a test runs; calling it aborts the current run
+
+function testEndpoint() {
+  let url = $("t-url").value.trim() || defaultWsUrl();
+  const key = $("t-key").value.trim();
+  if (key && !/[?&]api_key=/.test(url)) {
+    url += (url.includes("?") ? "&" : "?") + "api_key=" + encodeURIComponent(key);
+  }
+  return url;
+}
+
+function streamRun(n, opts) {
+  return new Promise((resolve) => {
+    const r = { run: n, connectMs: null, sentenceMs: null, lastWordMs: null, audioS: 0,
+                rtf: null, prerollMs: 0, gaps: 0, gapMs: 0, worstGapMs: 0,
+                bargeMs: null, staleMs: 0, outcome: "" };
+    const contextId = `test-${n}-${Date.now()}`;
+    const words = opts.text.split(/\s+/).filter(Boolean);
+    const sentenceEnd = Math.max(0, words.findIndex((w) => /[.!?]["')\]]*$/.test(w)));
+    let ws, tick = null, bargeTimer = null, settled = false;
+    let t0 = performance.now(), firstTextAt = null, sentenceAt = null, lastWordAt = null;
+    let firstAudioAt = null, lastAudioAt = null, cancelAt = null, rate = 0, played = 0;
+    // When a player that starts on the first chunk and never buffers ahead runs dry.
+    let playEnd = null;
+
+    const done = (outcome) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(tick); clearTimeout(bargeTimer);
+      r.outcome = r.outcome || outcome;
+      if (firstAudioAt !== null && r.audioS > 0) r.rtf = (lastAudioAt - firstTextAt) / 1000 / r.audioS;
+      try { ws.close(); } catch (_) {}
+      testStop = null;
+      resolve(r);
+    };
+    testStop = () => done("stopped");
+
+    try { ws = new WebSocket(opts.url); }
+    catch (err) { r.outcome = "bad url: " + err.message; return done(r.outcome); }
+    ws.binaryType = "arraybuffer";
+    const send = (frame) => ws.send(JSON.stringify(frame));
+
+    ws.onopen = () => {
+      r.connectMs = performance.now() - t0;
+      const request = { format: "pcm", use_active_voice: opts.active };
+      if (opts.rate) request.sample_rate = opts.rate;
+      if (opts.seed) request.seed = 1234;
+      send({ event: "start", request, context_id: contextId });
+      firstTextAt = performance.now();
+      if (opts.wps <= 0) {
+        send({ event: "text", text: opts.text });
+        sentenceAt = lastWordAt = performance.now();
+        send({ event: "stop" });
+      } else {
+        let i = 0;
+        const step = () => {
+          if (ws.readyState !== WebSocket.OPEN || i >= words.length) return clearInterval(tick);
+          send({ event: "text", text: words[i] + (i < words.length - 1 ? " " : "") });
+          if (i === sentenceEnd) sentenceAt = performance.now();
+          if (++i === words.length) {
+            lastWordAt = performance.now();
+            // Audio that started while the text was still arriving: report
+            // how far ahead of the last word it was, as a negative figure.
+            if (firstAudioAt !== null) r.lastWordMs = firstAudioAt - lastWordAt;
+            send({ event: "stop" });
+            clearInterval(tick);
+          }
+        };
+        step();
+        tick = setInterval(step, 1000 / opts.wps);
+      }
+      if (opts.bargeMs > 0) {
+        bargeTimer = setTimeout(() => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          cancelAt = performance.now();
+          clearInterval(tick);
+          send({ event: "cancel" });
+          if (opts.play) player.stop();
+        }, opts.bargeMs);
+      }
+    };
+
+    ws.onmessage = (event) => {
+      let frame;
+      try { frame = mpDecode(event.data); } catch (err) { return log(`[run ${n}] undecodable frame: ${err}`, "e"); }
+      if (frame.context_id !== undefined && frame.context_id !== contextId) {
+        return log(`[run ${n}] ignored a frame from turn ${frame.context_id}`, "w");
+      }
+      if (frame.event === "started") {
+        rate = frame.sample_rate;
+        if (opts.play) { player.begin(rate); player.expect(opts.text.length / charsPerSecond); }
+      } else if (frame.event === "audio") {
+        const now = performance.now();
+        const samples = pcmSamples(frame.audio);
+        const seconds = samples.length / rate;
+        if (cancelAt !== null) { r.staleMs += seconds * 1000; return; }
+        if (firstAudioAt === null) {
+          firstAudioAt = now;
+          if (sentenceAt !== null) r.sentenceMs = now - sentenceAt;
+          if (lastWordAt !== null) r.lastWordMs = now - lastWordAt;
+        }
+        r.prerollMs = Math.max(r.prerollMs, (now - firstAudioAt) - played * 1000);
+        if (playEnd !== null && now > playEnd) {
+          const gap = now - playEnd;
+          r.gaps += 1; r.gapMs += gap; r.worstGapMs = Math.max(r.worstGapMs, gap);
+          playEnd = now;
+        }
+        playEnd = (playEnd ?? now) + seconds * 1000;
+        played += seconds;
+        r.audioS = played;
+        lastAudioAt = now;
+        if (opts.play) player.push(samples);
+      } else if (frame.event === "log") {
+        log(`[run ${n}] server: ${frame.message}`, "w");
+      } else if (frame.event === "finish") {
+        if (frame.reason === "cancel") {
+          r.bargeMs = cancelAt !== null ? performance.now() - cancelAt : null;
+          r.outcome = "barged in";
+          return done(r.outcome);
+        }
+        if (opts.play) player.end();
+        done(frame.reason === "error" ? "error: " + frame.error : "ok");
+      }
+    };
+    ws.onerror = () => { r.outcome = r.outcome || "connection error"; };
+    ws.onclose = (event) => {
+      if (!settled) done(r.outcome || `closed ${event.code}${event.reason ? ": " + event.reason : ""}`);
+    };
+  });
+}
+
+const fmtMs = (v) => (v == null ? "—" : `${Math.round(v)} ms`);
+const fmtAfter = (v) => (v == null ? "—" : v < 0 ? `${(-v / 1000).toFixed(1)} s before` : fmtMs(v));
+// Voice-agent targets: green = ideal, amber = acceptable, red = poor.
+const TARGETS = {
+  firstAudio: [250, 400],  // TTS first audio chunk
+  gap: [0, 100],           // a gap between chunks
+  barge: [100, 200],       // barge-in -> playback stops
+  stale: [0, 100],         // audio of the cancelled turn still arriving
+};
+const grade = (v, [ideal, ok]) => (v == null ? "" : v <= ideal ? "good" : v <= ok ? "slow" : "bad");
+const latencyClass = (v) => grade(v, TARGETS.firstAudio);
+const gapClass = (r) => (!r.gaps ? "good" : r.gaps <= 2 && r.worstGapMs <= TARGETS.gap[1] ? "slow" : "bad");
+const fmtGaps = (r) => (r.gaps ? `${r.gaps} · ${(r.gapMs / 1000).toFixed(1)} s total` : "none");
+
+function addResultRow(r) {
+  const tr = document.createElement("tr");
+  const cells = [
+    [String(r.run), ""],
+    [fmtMs(r.connectMs), ""],
+    [fmtMs(r.sentenceMs), latencyClass(r.sentenceMs)],
+    [fmtAfter(r.lastWordMs), r.lastWordMs != null && r.lastWordMs < 0 ? "good" : latencyClass(r.lastWordMs)],
+    [r.audioS ? `${r.audioS.toFixed(2)} s` : "—", ""],
+    [r.rtf == null ? "—" : `${r.rtf.toFixed(2)}×`, r.rtf == null ? "" : r.rtf <= 1 ? "good" : "slow"],
+    [fmtGaps(r), r.audioS ? gapClass(r) : ""],
+    [fmtMs(r.prerollMs), r.prerollMs <= 100 ? "good" : r.prerollMs <= 1000 ? "slow" : "bad"],
+    [fmtMs(r.bargeMs), grade(r.bargeMs, TARGETS.barge)],
+    [r.bargeMs == null ? "—" : fmtMs(r.staleMs), r.bargeMs == null ? "" : grade(r.staleMs, TARGETS.stale)],
+    [r.outcome, r.outcome === "ok" || r.outcome === "barged in" ? "" : "bad"],
+  ];
+  for (const [text, cls] of cells) {
+    const td = document.createElement("td");
+    td.textContent = text;
+    if (cls) td.className = cls;
+    tr.appendChild(td);
+  }
+  $("t-table").tBodies[0].appendChild(tr);
+}
+
+function percentile(values, p) {
+  const v = [...values].sort((a, b) => a - b);
+  return v.length ? v[Math.min(v.length - 1, Math.floor((p / 100) * v.length))] : null;
+}
+
+const verdict = (cls) =>
+  `<b class="${cls}">${{ good: "ideal", slow: "acceptable", bad: "poor" }[cls] || "—"}</b>`;
+
+function summarise(results) {
+  const ttfa = results.map((r) => r.sentenceMs).filter((v) => v != null);
+  const rtf = results.map((r) => r.rtf).filter((v) => v != null);
+  const pre = results.map((r) => r.prerollMs);
+  const barged = results.filter((r) => r.bargeMs != null);
+  const barge = barged.map((r) => r.bargeMs), stale = barged.map((r) => r.staleMs);
+  if (!ttfa.length) { $("t-summary").textContent = "no run produced audio"; return; }
+  const median = percentile(ttfa, 50);
+  $("t-summary").innerHTML =
+    `first audio after 1st sentence over ${ttfa.length} run(s): ` +
+    `median <b>${Math.round(median)} ms</b> · p95 <b>${Math.round(percentile(ttfa, 95))} ms</b> · ` +
+    `best ${Math.round(Math.min(...ttfa))} · worst ${Math.round(Math.max(...ttfa))}` +
+    (rtf.length ? ` — realtime factor ${(rtf.reduce((a, b) => a + b, 0) / rtf.length).toFixed(2)}×` : "") +
+    ` — worst pre-roll for gapless playback <b>${Math.round(Math.max(...pre))} ms</b>` +
+    (rtf.length && Math.max(...rtf) > 1
+      ? " (generation is slower than realtime here, so playback needs that much buffered)"
+      : "") +
+    `<br>against voice-agent targets: first audio ${verdict(latencyClass(median))} · ` +
+    `gaps ${verdict(results.filter((r) => r.audioS).map(gapClass).includes("bad") ? "bad"
+      : results.some((r) => r.gaps) ? "slow" : "good")}` +
+    (barge.length ? ` · barge-in ${verdict(grade(Math.max(...barge), TARGETS.barge))}` +
+      ` · stale audio ${verdict(grade(Math.max(...stale), TARGETS.stale))}` : "");
+}
+
+$("t-go").onclick = async () => {
+  const opts = {
+    url: testEndpoint(),
+    text: $("t-text").value.trim(),
+    wps: Math.max(0, parseFloat($("t-wps").value) || 0),
+    rate: parseInt($("t-rate").value, 10) || null,
+    bargeMs: Math.max(0, parseInt($("t-barge").value, 10) || 0),
+    play: $("t-play").checked,
+    active: $("t-active").checked,
+    seed: $("t-seed").checked,
+  };
+  if (!opts.text) return log("nothing to stream", "e");
+  const runs = Math.min(50, Math.max(1, parseInt($("t-runs").value, 10) || 1));
+  $("t-go").disabled = true;
+  $("t-stop").disabled = false;
+  const shown = opts.url.replace(/([?&]api_key=)[^&]+/, "$1…");
+  log(`streaming test: ${runs} run(s) against ${shown} at ${opts.wps || "whole-text"} words/s`);
+  const results = [];
+  let stopped = false;
+  $("t-stop").onclick = () => { stopped = true; if (testStop) testStop(); };
+  for (let n = 1; n <= runs && !stopped; n++) {
+    const r = await streamRun(n, opts);
+    results.push(r);
+    addResultRow(r);
+    log(`[run ${n}] ${r.outcome} — first audio ${fmtMs(r.sentenceMs)} after the first sentence`,
+        r.outcome === "ok" || r.outcome === "barged in" ? "g" : "e");
+    if (opts.play && n < runs && !stopped && r.outcome === "ok") {
+      // Let this run's audio finish before the next one replaces it.
+      const deadline = performance.now() + (r.audioS + 10) * 1000;
+      while (player.timer !== null && !stopped && performance.now() < deadline) {
+        await new Promise((ok) => setTimeout(ok, 100));
+      }
+    }
+  }
+  summarise(results);
+  $("t-go").disabled = false;
+  $("t-stop").disabled = true;
+};
+
+$("t-clear").onclick = () => {
+  $("t-table").tBodies[0].innerHTML = "";
+  $("t-summary").textContent = "";
 };
 
 /* ──────────────────────────── 3 · one-shot clone ──────────────────────────── */

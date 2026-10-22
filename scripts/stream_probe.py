@@ -56,6 +56,8 @@ class Frame:
 class Turn:
     started_at: float
     frames: list[Frame] = field(default_factory=list)
+    #: When the last `text` frame went out, relative to `started_at`.
+    text_done_at: float | None = None
     finished_at: float | None = None
     finish_reason: str | None = None
     sample_rate: int = 44100
@@ -104,6 +106,7 @@ async def run_turn(args: argparse.Namespace) -> Turn:
                     await asyncio.sleep(args.word_interval)
             else:
                 await ws.send(_pack({"event": "text", "text": args.text}))
+            turn.text_done_at = time.perf_counter() - turn.started_at
             await ws.send(_pack({"event": "stop"}))
 
         send_task = asyncio.create_task(sender())
@@ -274,6 +277,15 @@ def summarise(turn: Turn, prerolls: list[float]) -> dict:
         "frames": len(turn.frames),
         "audio_s": round(audio_s, 3),
         "ttfa_ms": round(ttfa_ms, 1) if ttfa_ms is not None else None,
+        # What a voice agent feels: first audio after the LLM's last word was
+        # sent, so the time spent typing the text in does not count. For a
+        # single sentence this is the server's whole share of the response
+        # latency; negative means audio started before the text was finished.
+        "ttfa_after_text_ms": (
+            round(ttfa_ms - turn.text_done_at * 1000.0, 1)
+            if ttfa_ms is not None and turn.text_done_at is not None
+            else None
+        ),
         "wall_to_last_audio_s": round(wall_s, 3),
         # Below 1.0 the server produces audio faster than it plays; above it,
         # a client must buffer and the buffer must grow with the utterance.

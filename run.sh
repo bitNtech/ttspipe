@@ -124,12 +124,12 @@ pick_interpreter() {
     log "no system python3.10-3.12 found on PATH; bootstrapping uv to fetch one"
     export PATH="$HOME/.local/bin:$PATH"
     if ! command -v uv >/dev/null 2>&1; then
-        curl -LsSf https://astral.sh/uv/install.sh | sh || die "failed to install uv"
+        curl -LsSf https://astral.sh/uv/install.sh | sh >&2 || die "failed to install uv"
         export PATH="$HOME/.local/bin:$PATH"
     fi
     command -v uv >/dev/null 2>&1 || die "uv install reported success but 'uv' is not on PATH"
 
-    uv python install 3.12 || die "uv failed to install python 3.12"
+    uv python install 3.12 >&2 || die "uv failed to install python 3.12"
 
     # `uv python find` prefers a discovered project venv, which on a rerun is
     # the very venv we are about to (re)build -- and on a half-built one that
@@ -157,6 +157,11 @@ pick_interpreter() {
     echo "$py"
 }
 
+# An existing venv already pins the interpreter. Reusing it keeps reruns off
+# the network and works where $HOME is read-only (the systemd unit).
+if [[ -z "${_RUN_SH_PY:-}" && -z "$PYTHON_BIN" && -x "$VENV_DIR/bin/python" ]]; then
+    _RUN_SH_PY="$VENV_DIR/bin/python"
+fi
 if [[ -z "${_RUN_SH_PY:-}" ]]; then
     _RUN_SH_PY="$(pick_interpreter)"
 fi
@@ -368,5 +373,36 @@ export CUDA_DEVICE_ORDER="PCI_BUS_ID"
 case "${OSTYPE:-}" in msys*|cygwin*|win32) PATHSEP=';' ;; *) PATHSEP=':' ;; esac
 export PYTHONPATH="$TTS_VENDOR_DIR${PYTHONPATH:+$PATHSEP$PYTHONPATH}"
 
-log "launching uvicorn on $TTS_HOST:$TTS_PORT"
-exec "$VENV_BIN/uvicorn" app.main:app --host "$TTS_HOST" --port "$TTS_PORT"
+# One process, one worker: the model lives in this process and owns the
+# accelerator. Scale out with more processes behind a balancer, never with
+# --workers.
+#
+#  * per-message deflate off: audio frames are incompressible PCM, so zlib
+#    spends CPU and adds per-frame latency for no saved bytes. Every Python
+#    `websockets` client offers it by default, so it was always on.
+#  * access log off: it records the query string, which is where a browser
+#    puts its ?api_key=. Set TTS_ACCESS_LOG=1 to bring it back.
+#  * graceful shutdown: on SIGTERM, how long open sessions get before they
+#    are cut. Call POST /admin/drain first to stop new ones arriving.
+UVICORN_ARGS=(
+    --host "$TTS_HOST" --port "$TTS_PORT"
+    --ws-per-message-deflate false
+    --ws-ping-interval "${TTS_WS_PING_INTERVAL_S:-20}"
+    --ws-ping-timeout "${TTS_WS_PING_TIMEOUT_S:-20}"
+    --timeout-graceful-shutdown "${TTS_GRACEFUL_SHUTDOWN_S:-30}"
+    --timeout-keep-alive 30
+)
+[[ "${TTS_ACCESS_LOG:-0}" == "1" || "${TTS_ACCESS_LOG:-0}" == "true" ]] || UVICORN_ARGS+=(--no-access-log)
+# TLS: serve https:// and wss:// directly. Behind a TLS-terminating proxy or
+# load balancer, leave these unset. scripts/make_dev_cert.sh makes a
+# self-signed pair for testing.
+SCHEME=http
+if [[ -n "${TTS_SSL_CERTFILE:-}${TTS_SSL_KEYFILE:-}" ]]; then
+    [[ -r "${TTS_SSL_CERTFILE:-}" && -r "${TTS_SSL_KEYFILE:-}" ]] \
+        || die "TTS_SSL_CERTFILE and TTS_SSL_KEYFILE must both name readable files"
+    UVICORN_ARGS+=(--ssl-certfile "$TTS_SSL_CERTFILE" --ssl-keyfile "$TTS_SSL_KEYFILE")
+    SCHEME=https
+fi
+
+log "launching uvicorn on $SCHEME://$TTS_HOST:$TTS_PORT"
+exec "$VENV_BIN/uvicorn" app.main:app "${UVICORN_ARGS[@]}"
